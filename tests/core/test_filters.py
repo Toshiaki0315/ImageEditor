@@ -2,10 +2,11 @@ import subprocess
 import sys
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 from image_editor.core.filters import (
     FilterType,
+    add_grain,
     apply_filter,
     output_size,
     polaroid_border_sizes,
@@ -37,6 +38,8 @@ def test_filter_labels():
         "モノトーン",
         "ハイトーン",
         "ポラロイド風",
+        "ポジフィルム風",
+        "レトロカメラ風",
     ]
 
 
@@ -221,3 +224,85 @@ def test_with_border_has_no_effect_on_other_filters(filter_type):
         apply_filter(image, filter_type, with_border=False).tobytes()
         == apply_filter(image, filter_type).tobytes()
     )
+
+
+# --- ポジフィルム風・レトロカメラ風 -------------------------------------------------
+
+
+def mean_saturation(image: Image.Image) -> float:
+    return ImageStat.Stat(image.convert("HSV")).mean[1]
+
+
+def test_positive_film_increases_saturation():
+    image = make_sample()
+
+    result = apply_filter(image, FilterType.POSITIVE_FILM)
+
+    assert result.mode == "RGB"
+    assert result.size == image.size
+    assert mean_saturation(result) > mean_saturation(image) * 1.1
+
+
+def test_positive_film_s_curve():
+    # 暗いところはより暗く、明るいところはより明るくなる（緑は色味補正の影響を受けない）
+    dark = apply_filter(Image.new("RGB", (4, 4), (64, 64, 64)), FilterType.POSITIVE_FILM)
+    bright = apply_filter(Image.new("RGB", (4, 4), (192, 192, 192)), FilterType.POSITIVE_FILM)
+
+    assert dark.getpixel((0, 0))[1] < 64
+    assert bright.getpixel((0, 0))[1] > 192
+
+
+def test_positive_film_cool_shadows_warm_highlights():
+    dark = apply_filter(Image.new("RGB", (4, 4), (40, 40, 40)), FilterType.POSITIVE_FILM)
+    bright = apply_filter(Image.new("RGB", (4, 4), (220, 220, 220)), FilterType.POSITIVE_FILM)
+
+    r, _, b = dark.getpixel((0, 0))
+    assert b > r  # 暗部は青寄り
+    r, _, b = bright.getpixel((0, 0))
+    assert r > b  # 明部は暖色寄り
+
+
+def test_retro_camera_lifts_blacks_and_lowers_whites():
+    black = apply_filter(Image.new("RGB", (64, 64), (0, 0, 0)), FilterType.RETRO_CAMERA)
+    white = apply_filter(Image.new("RGB", (64, 64), (255, 255, 255)), FilterType.RETRO_CAMERA)
+
+    # 粒子があるので平均で比べる
+    assert min(ImageStat.Stat(black).mean) > 15
+    assert max(ImageStat.Stat(white).mean) < 245
+
+
+def test_retro_camera_is_warm_and_muted():
+    gray = apply_filter(Image.new("RGB", (64, 64), (128, 128, 128)), FilterType.RETRO_CAMERA)
+    r, _, b = ImageStat.Stat(gray).mean
+    assert r > b + 10
+
+    image = make_sample()
+    assert mean_saturation(apply_filter(image, FilterType.RETRO_CAMERA)) < mean_saturation(image)
+
+
+def test_retro_camera_has_grain():
+    result = apply_filter(Image.new("RGB", (128, 128), (128, 128, 128)), FilterType.RETRO_CAMERA)
+
+    stddev = ImageStat.Stat(result).stddev
+    assert all(2 < s < 10 for s in stddev)
+    # 粒子はモノクロ: R と G の差（暖色補正による一定の差）は画素によらず一定
+    r, g, _ = result.split()
+    low, high = ImageChops.subtract(r, g, offset=128).getextrema()
+    assert high - low <= 2
+
+
+def test_retro_camera_grain_is_deterministic():
+    image = make_sample()
+    first = apply_filter(image, FilterType.RETRO_CAMERA)
+    second = apply_filter(image, FilterType.RETRO_CAMERA)
+    assert first.tobytes() == second.tobytes()
+
+
+def test_add_grain_strength():
+    image = Image.new("RGB", (256, 256), (128, 128, 128))
+
+    result = add_grain(image, 10, seed=1)
+
+    low, high = result.getchannel("G").getextrema()
+    assert 118 <= low < 128 < high <= 138
+    assert add_grain(image, 0, seed=1).tobytes() == image.tobytes()

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Callable
 from enum import Enum
 
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageOps
 
 from image_editor.core.io import normalize_mode
 
@@ -26,6 +27,20 @@ POLAROID_BORDER_RATIO = 0.05  # 上・左・右の白枠（短辺に対する比
 POLAROID_BOTTOM_RATIO = 0.20  # 下の白枠（短辺に対する比率）
 POLAROID_BORDER_COLOR = (255, 255, 255)
 
+# ポジフィルム風（リバーサルフィルムのような鮮やかな発色）
+POSITIVE_SATURATION = 1.35
+POSITIVE_CURVE = 0.5  # S 字カーブの強さ（0 = 直線、1 = smoothstep）
+POSITIVE_HIGHLIGHT_WARM = 6  # 明部の赤を足す量（最大値）
+POSITIVE_SHADOW_COOL = 10  # 暗部の青を足す量（最大値）
+
+# レトロカメラ風（色あせたプリントのような発色 + フィルムの粒子）
+RETRO_SATURATION = 0.8
+RETRO_BLACK = 28  # 黒の浮き（出力の最小値）
+RETRO_WHITE = 232  # 白の抑え（出力の最大値）
+RETRO_TINT = (1.04, 1.0, 0.88)  # 暖色寄りにする係数 (R, G, B)
+RETRO_GRAIN = 10  # 粒子の強さ（明るさの最大変化量）
+RETRO_GRAIN_SEED = 20260928  # 粒子の模様を毎回同じにするための乱数シード
+
 
 class FilterType(Enum):
     """加工の種類。"""
@@ -35,6 +50,8 @@ class FilterType(Enum):
     MONOTONE = "monotone"
     HIGH_TONE = "high_tone"
     POLAROID = "polaroid"
+    POSITIVE_FILM = "positive_film"
+    RETRO_CAMERA = "retro_camera"
 
     @property
     def label(self) -> str:
@@ -48,6 +65,8 @@ _LABELS: dict[FilterType, str] = {
     FilterType.MONOTONE: "モノトーン",
     FilterType.HIGH_TONE: "ハイトーン",
     FilterType.POLAROID: "ポラロイド風",
+    FilterType.POSITIVE_FILM: "ポジフィルム風",
+    FilterType.RETRO_CAMERA: "レトロカメラ風",
 }
 
 
@@ -124,6 +143,51 @@ def polaroid_tone(image: Image.Image) -> Image.Image:
     )
 
 
+def positive_film(image: Image.Image) -> Image.Image:
+    """RGB 画像をポジフィルム風にする（彩度を上げ、S 字カーブで締め、暗部を青く・明部を暖色に）。"""
+    saturated = ImageEnhance.Color(image).enhance(POSITIVE_SATURATION)
+
+    def curve(v: int) -> float:
+        x = v / 255
+        return (1 - POSITIVE_CURVE) * x + POSITIVE_CURVE * (3 * x * x - 2 * x * x * x)
+
+    red = [curve(v) * 255 + POSITIVE_HIGHLIGHT_WARM * (v / 255) ** 2 for v in range(256)]
+    green = [curve(v) * 255 for v in range(256)]
+    blue = [curve(v) * 255 + POSITIVE_SHADOW_COOL * (1 - v / 255) ** 2 for v in range(256)]
+    return saturated.point(_clip_table(red + green + blue))
+
+
+def retro_camera(image: Image.Image) -> Image.Image:
+    """RGB 画像をレトロカメラ風にする（黒を浮かせて白を抑え、暖色寄り・彩度控えめ・粒子あり）。"""
+    muted = ImageEnhance.Color(image).enhance(RETRO_SATURATION)
+    tables: list[float] = []
+    for factor in RETRO_TINT:
+        tables += [
+            (RETRO_BLACK + v * (RETRO_WHITE - RETRO_BLACK) / 255) * factor for v in range(256)
+        ]
+    return add_grain(muted.point(_clip_table(tables)), RETRO_GRAIN, RETRO_GRAIN_SEED)
+
+
+def add_grain(image: Image.Image, strength: int, seed: int) -> Image.Image:
+    """RGB 画像にモノクロの粒子（ノイズ）を重ねる。同じ seed と大きさなら毎回同じ模様になる。
+
+    明るさは最大で ±strength 変化する。
+    """
+    rng = random.Random(seed)
+    size = image.size
+
+    def uniform_noise() -> Image.Image:
+        return Image.frombytes("L", size, rng.randbytes(size[0] * size[1]))
+
+    # 一様乱数 2 つの平均で、中央 (128) に寄った自然な粒子にする
+    noise = Image.blend(uniform_noise(), uniform_noise(), 0.5)
+    scale = strength / 128
+    brighter = noise.point([int(max(0, v - 128) * scale + 0.5) for v in range(256)])
+    darker = noise.point([int(max(0, 128 - v) * scale + 0.5) for v in range(256)])
+    image = ImageChops.add(image, Image.merge("RGB", (brighter,) * 3))
+    return ImageChops.subtract(image, Image.merge("RGB", (darker,) * 3))
+
+
 def polaroid_border_sizes(size: tuple[int, int]) -> tuple[int, int]:
     """ポラロイドの白枠の太さ (上・左・右, 下) を返す。四捨五入、最小 1px。"""
     short_side = min(size)
@@ -147,6 +211,11 @@ def _split_alpha(image: Image.Image) -> tuple[Image.Image, Image.Image | None]:
     return image, None
 
 
+def _clip_table(values: list[float]) -> list[int]:
+    """四捨五入して 0〜255 にクリップしたルックアップテーブルを返す。"""
+    return [min(255, max(0, int(v + 0.5))) for v in values]
+
+
 def _scale_table(factor: float) -> list[int]:
     """各値に factor を掛けて 0〜255 にクリップするルックアップテーブル。"""
     return [min(255, int(v * factor + 0.5)) for v in range(256)]
@@ -157,4 +226,6 @@ _RGB_FILTERS: dict[FilterType, Callable[[Image.Image], Image.Image]] = {
     FilterType.MONOTONE: monotone,
     FilterType.HIGH_TONE: high_tone,
     FilterType.POLAROID: polaroid_tone,  # 白枠なし（with_border=False のとき）
+    FilterType.POSITIVE_FILM: positive_film,
+    FilterType.RETRO_CAMERA: retro_camera,
 }
