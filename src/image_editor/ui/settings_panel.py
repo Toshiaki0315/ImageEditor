@@ -22,6 +22,8 @@ from image_editor.core.effects import (
     AGING_MIN,
     BRIGHTNESS_MAX,
     BRIGHTNESS_MIN,
+    CONTRAST_MAX,
+    CONTRAST_MIN,
     SATURATION_MAX,
     SATURATION_MIN,
     TEMPERATURE_MAX,
@@ -99,10 +101,16 @@ class SettingsPanel(QWidget):
         )
         self.brightness_slider.setValue(0)
         self.brightness_value_label.setText(_signed_text(0))
+        self.contrast_slider, self.contrast_value_label, contrast_row = _amount_slider(
+            CONTRAST_MIN, CONTRAST_MAX
+        )
+        self.contrast_slider.setValue(0)
+        self.contrast_value_label.setText(_signed_text(0))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
         filter_form.addRow("明るさ", brightness_row)
+        filter_form.addRow("コントラスト", contrast_row)
         filter_form.addRow("色温度", temperature_row)
         filter_form.addRow("彩度", saturation_row)
         filter_form.addRow("周辺減光", vignette_row)
@@ -155,6 +163,7 @@ class SettingsPanel(QWidget):
         self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
         self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
         self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
+        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -183,6 +192,7 @@ class SettingsPanel(QWidget):
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
             self.saturation_slider.setValue(0)
             self.brightness_slider.setValue(0)
+            self.contrast_slider.setValue(0)
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -219,6 +229,7 @@ class SettingsPanel(QWidget):
             temperature=self.temperature_kelvin(),
             saturation=self.saturation_slider.value(),
             brightness=self.brightness_slider.value(),
+            contrast=self.contrast_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -298,6 +309,10 @@ class SettingsPanel(QWidget):
 
     def _on_brightness_changed(self, value: int) -> None:
         self.brightness_value_label.setText(_signed_text(value))
+        self._emit_changed()
+
+    def _on_contrast_changed(self, value: int) -> None:
+        self.contrast_value_label.setText(_signed_text(value))
         self._emit_changed()
 
     def _on_trim_toggled(self, checked: bool) -> None:

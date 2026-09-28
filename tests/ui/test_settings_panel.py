@@ -454,3 +454,35 @@ def test_sliders_are_long_enough_and_aligned(qtbot):
     widths = {slider.width() for slider in sliders}
     assert len(widths) == 1  # 長さがそろっている
     assert widths.pop() >= 225  # 以前 (150px) の 1.5 倍以上
+
+
+# --- コントラスト -------------------------------------------------------------
+
+
+def test_contrast_slider(panel, qtbot):
+    assert panel.contrast_slider.value() == 0
+    assert panel.contrast_value_label.text() == "0"
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.contrast_slider.setValue(-35)
+
+    assert blocker.args[0].contrast == -35
+    assert panel.contrast_value_label.text() == "-35"
+    assert panel.settings() == EditSettings(contrast=-35)
+
+
+def test_contrast_is_reset_on_new_image(panel):
+    panel.contrast_slider.setValue(60)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.contrast_slider.value() == 0
+    assert panel.contrast_value_label.text() == "0"
+
+
+def test_contrast_slider_is_as_long_as_others(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    widget.show()
+    qtbot.waitExposed(widget)
+    assert widget.contrast_slider.width() == widget.brightness_slider.width() >= 225
