@@ -380,3 +380,31 @@ def test_temperature_is_reset_on_new_image(panel):
 
     assert panel.temperature_kelvin() == 6500
     assert panel.temperature_value_label.text() == "6500 K"
+
+
+# --- 彩度 ---------------------------------------------------------------------
+
+
+def test_saturation_slider(panel, qtbot):
+    assert panel.saturation_slider.value() == 0
+    assert panel.saturation_value_label.text() == "0"
+    assert (panel.saturation_slider.minimum(), panel.saturation_slider.maximum()) == (-100, 100)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.saturation_slider.setValue(30)
+
+    assert blocker.args[0].saturation == 30
+    assert panel.saturation_value_label.text() == "+30"
+
+    panel.saturation_slider.setValue(-50)
+    assert panel.saturation_value_label.text() == "-50"
+    assert panel.settings() == EditSettings(saturation=-50)
+
+
+def test_saturation_is_reset_on_new_image(panel):
+    panel.saturation_slider.setValue(-80)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.saturation_slider.value() == 0
+    assert panel.saturation_value_label.text() == "0"

@@ -8,6 +8,7 @@ from image_editor.core.effects import (
     aging,
     color_temperature,
     kelvin_to_rgb,
+    saturation,
     temperature_multipliers,
     vignette,
 )
@@ -102,7 +103,7 @@ def band_mean(image: Image.Image, index: int) -> list[float]:
     return ImageStat.Stat(image.crop((index * 40, 0, (index + 1) * 40, 80))).mean
 
 
-def saturation(image: Image.Image) -> float:
+def mean_saturation(image: Image.Image) -> float:
     """色の帯（左 4 本）の平均彩度。黒・白の帯は黄ばみで彩度が出るので含めない。"""
     return ImageStat.Stat(image.crop((0, 0, 160, 80)).convert("HSV")).mean[1]
 
@@ -118,7 +119,7 @@ def test_aging_zero_is_unchanged_copy():
 
 def test_aging_reduces_saturation_as_amount_grows():
     image = colorful()
-    values = [saturation(aging(image, amount)) for amount in (0, 25, 50, 75, 100)]
+    values = [mean_saturation(aging(image, amount)) for amount in (0, 25, 50, 75, 100)]
     assert values == sorted(values, reverse=True)
     assert values[-1] < values[0] * 0.6
 
@@ -252,3 +253,61 @@ def test_temperature_does_not_modify_input():
 def test_temperature_out_of_range(kelvin):
     with pytest.raises(ValueError):
         color_temperature(Image.new("RGB", (10, 10)), kelvin)
+
+
+# --- 彩度 ---------------------------------------------------------------------
+
+
+def test_saturation_zero_is_unchanged_copy():
+    image = colorful()
+
+    result = saturation(image, 0)
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+def test_saturation_minus_100_is_grayscale():
+    result = saturation(colorful(), -100)
+    for x in range(0, 240, 40):
+        r, g, b = result.getpixel((x + 5, 5))
+        assert max(r, g, b) - min(r, g, b) <= 1
+
+
+def test_saturation_is_monotonic():
+    image = colorful()
+    values = [
+        ImageStat.Stat(saturation(image, a).crop((0, 0, 160, 80)).convert("HSV")).mean[1]
+        for a in (-100, -50, 0, 50, 100)
+    ]
+    assert values == sorted(values)
+    assert values[0] < 5
+
+
+def test_saturation_keeps_gray_and_brightness():
+    gray = Image.new("RGB", (8, 8), (120, 120, 120))
+    assert saturation(gray, 100).getpixel((0, 0)) == (120, 120, 120)
+    assert saturation(gray, -100).getpixel((0, 0)) == (120, 120, 120)
+
+
+def test_saturation_keeps_alpha():
+    image = colorful().convert("RGBA")
+    image.putalpha(12)
+
+    result = saturation(image, 60)
+
+    assert result.mode == "RGBA"
+    assert result.getchannel("A").getextrema() == (12, 12)
+
+
+def test_saturation_does_not_modify_input():
+    image = colorful()
+    before = image.tobytes()
+    saturation(image, -70)
+    assert image.tobytes() == before
+
+
+@pytest.mark.parametrize("amount", [-101, 101])
+def test_saturation_out_of_range(amount):
+    with pytest.raises(ValueError):
+        saturation(Image.new("RGB", (10, 10)), amount)

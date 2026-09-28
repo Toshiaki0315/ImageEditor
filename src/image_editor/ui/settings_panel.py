@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
 from image_editor.core.effects import (
     AGING_MAX,
     AGING_MIN,
+    SATURATION_MAX,
+    SATURATION_MIN,
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
     TEMPERATURE_NEUTRAL,
@@ -83,10 +85,16 @@ class SettingsPanel(QWidget):
         self.temperature_slider.setPageStep(5)
         self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
         self.temperature_value_label.setText(_kelvin_text(TEMPERATURE_NEUTRAL))
+        self.saturation_slider, self.saturation_value_label, saturation_row = _amount_slider(
+            SATURATION_MIN, SATURATION_MAX
+        )
+        self.saturation_slider.setValue(0)
+        self.saturation_value_label.setText(_signed_text(0))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
         filter_form.addRow("色温度", temperature_row)
+        filter_form.addRow("彩度", saturation_row)
         filter_form.addRow("周辺減光", vignette_row)
         filter_form.addRow("経年劣化", aging_row)
 
@@ -135,6 +143,7 @@ class SettingsPanel(QWidget):
         self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
         self.aging_slider.valueChanged.connect(self._on_aging_changed)
         self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
+        self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -161,6 +170,7 @@ class SettingsPanel(QWidget):
             self.vignette_slider.setValue(0)
             self.aging_slider.setValue(0)
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
+            self.saturation_slider.setValue(0)
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -195,6 +205,7 @@ class SettingsPanel(QWidget):
             vignette=self.vignette_slider.value(),
             aging=self.aging_slider.value(),
             temperature=self.temperature_kelvin(),
+            saturation=self.saturation_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -266,6 +277,10 @@ class SettingsPanel(QWidget):
 
     def _on_temperature_changed(self, _value: int) -> None:
         self.temperature_value_label.setText(_kelvin_text(self.temperature_kelvin()))
+        self._emit_changed()
+
+    def _on_saturation_changed(self, value: int) -> None:
+        self.saturation_value_label.setText(_signed_text(value))
         self._emit_changed()
 
     def _on_trim_toggled(self, checked: bool) -> None:
@@ -363,6 +378,11 @@ class _Updating:
 
     def __exit__(self, *exc: object) -> None:
         self._panel._updating = self._previous
+
+
+def _signed_text(value: int) -> str:
+    """0 以外は符号付きで表示する（例: +30, -50）。"""
+    return f"{value:+d}" if value else "0"
 
 
 def _kelvin_text(kelvin: int) -> str:

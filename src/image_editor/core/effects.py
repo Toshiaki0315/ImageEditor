@@ -1,4 +1,4 @@
-"""フィルターの前後にかける効果（色温度・周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（色温度・彩度・周辺減光・経年劣化）。"""
 
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ TEMPERATURE_NEUTRAL = 6500  # 昼光。この値では変化なし
 TEMPERATURE_STEP = 100
 TEMPERATURE_STRENGTH = 0.5  # 黒体放射の色の差をどれだけ反映するか（1 = そのまま）
 _LUMA = (0.299, 0.587, 0.114)
+
+# 彩度（-100 = 白黒、0 = 変化なし、+100 = 鮮やかさ 2 倍）
+SATURATION_MIN = -100
+SATURATION_MAX = 100
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -160,3 +164,20 @@ def kelvin_to_rgb(kelvin: float) -> tuple[float, float, float]:
         return min(255.0, max(1.0, value))  # 0 だと倍率計算で割れないので下限は 1
 
     return clip(red), clip(green), clip(blue)
+
+
+def saturation(image: Image.Image, amount: int) -> Image.Image:
+    """彩度（色の鮮やかさ）を変えた新しい画像を返す（入力画像は変更しない）。
+
+    amount は -100〜+100。-100 で白黒、0 で変化なし、+100 で鮮やかさ 2 倍。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("彩度", amount, SATURATION_MIN, SATURATION_MAX)
+    if amount == 0:
+        return image.copy()
+
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    rgb = ImageEnhance.Color(image.convert("RGB")).enhance(1 + amount / SATURATION_MAX)
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
