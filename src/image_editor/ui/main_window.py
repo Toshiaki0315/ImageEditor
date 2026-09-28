@@ -97,7 +97,6 @@ class MainWindow(QMainWindow):
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.trim_view_toggled.connect(self._on_trim_view_toggled)
         self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
-        self.settings_panel.preview_requested.connect(self.update_preview)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
         self.settings_panel.reset_requested.connect(self.reset)
 
@@ -137,12 +136,6 @@ class MainWindow(QMainWindow):
         self.quit_action.setMenuRole(QAction.MenuRole.QuitRole)
         self.quit_action.triggered.connect(self.close)
         file_menu.addAction(self.quit_action)
-
-        view_menu = self.menuBar().addMenu("表示")
-        self.preview_action = QAction("プレビュー更新", self)
-        self.preview_action.setShortcut(QKeySequence("Ctrl+R"))  # macOS では ⌘R
-        self.preview_action.triggered.connect(self.update_preview)
-        view_menu.addAction(self.preview_action)
 
     # --- 読み込み -------------------------------------------------------------
 
@@ -387,7 +380,6 @@ class MainWindow(QMainWindow):
         busy = self.is_saving()
         enabled = self.loaded is not None and not busy
         self.save_action.setEnabled(enabled)
-        self.preview_action.setEnabled(enabled)
         self.open_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
 

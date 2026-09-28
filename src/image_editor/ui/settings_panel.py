@@ -35,7 +35,6 @@ class SettingsPanel(QWidget):
     """
 
     settings_changed = pyqtSignal(object)  # EditSettings
-    preview_requested = pyqtSignal()
     save_requested = pyqtSignal()
     reset_requested = pyqtSignal()
     trim_view_toggled = pyqtSignal(bool)  # True: 切り抜き後の表示、False: 全体表示
@@ -100,8 +99,7 @@ class SettingsPanel(QWidget):
         crop_buttons.addWidget(self.trim_button)
         crop_form.addRow(crop_buttons)
 
-        # ボタン
-        self.preview_button = QPushButton("プレビュー更新")
+        # ボタン（プレビューは設定の変更に合わせて自動で更新するので、更新ボタンは置かない）
         self.save_button = QPushButton("保存")
         self.reset_button = QPushButton("リセット")
         buttons = QHBoxLayout()
@@ -113,7 +111,6 @@ class SettingsPanel(QWidget):
         layout.addWidget(filter_box)
         layout.addWidget(crop_box)
         layout.addStretch(1)
-        layout.addWidget(self.preview_button)
         layout.addLayout(buttons)
 
         self.width_spin.valueChanged.connect(lambda _: self._on_size_edited("width"))
@@ -125,7 +122,6 @@ class SettingsPanel(QWidget):
         self.clear_crop_button.clicked.connect(self.clear_crop)
         self.trim_button.toggled.connect(self._on_trim_toggled)
         self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
-        self.preview_button.clicked.connect(self.preview_requested)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -218,7 +214,7 @@ class SettingsPanel(QWidget):
     def set_busy(self, busy: bool) -> None:
         """処理中はボタンを無効化する。"""
         enabled = not busy and self._image_size is not None
-        for button in (self.preview_button, self.save_button, self.reset_button):
+        for button in (self.save_button, self.reset_button):
             button.setEnabled(enabled)
 
     # --- 内部 -----------------------------------------------------------------

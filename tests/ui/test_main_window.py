@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QFileDialog, QMenu, QMessageBox, QSplitter
 
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
@@ -49,13 +49,11 @@ def test_file_menu_actions(qtbot):
     qtbot.addWidget(window)
 
     menus = [a.menu() for a in window.menuBar().actions() if a.menu()]
-    assert [m.title() for m in menus] == ["ファイル", "表示"]
+    assert [m.title() for m in menus] == ["ファイル"]
     texts = [a.text() for a in menus[0].actions() if not a.isSeparator()]
     assert texts == ["開く…", "保存…", "終了"]
-    assert [a.text() for a in menus[1].actions()] == ["プレビュー更新"]
     assert window.open_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
     assert window.save_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Save)
-    assert window.preview_action.shortcut() == QKeySequence("Ctrl+R")
     assert window.quit_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Quit)
 
 
@@ -241,19 +239,25 @@ def test_preview_changes_with_filter(loaded_window, filter_type):
     panel = loaded_window.settings_panel
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(filter_type))
 
-    panel.preview_button.click()
+    loaded_window.update_preview()
 
     assert preview_pixel(loaded_window, 50, 150) != before
 
 
-def test_preview_action_updates(loaded_window):
+def test_no_preview_button_or_menu(loaded_window):
+    # プレビューは自動で更新するので、更新ボタンとメニューは置かない
+    panel = loaded_window.settings_panel
+    assert not hasattr(panel, "preview_button")
+    assert not hasattr(loaded_window, "preview_action")
+    texts = [a.text() for m in loaded_window.menuBar().findChildren(QMenu) for a in m.actions()]
+    assert "プレビュー更新" not in texts
+
+
+def test_filter_change_updates_preview_automatically(loaded_window, qtbot):
     panel = loaded_window.settings_panel
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
 
-    loaded_window.preview_action.trigger()
-
-    r, g, b = preview_pixel(loaded_window, 50, 150)
-    assert r == g == b
+    qtbot.waitUntil(lambda: len(set(preview_pixel(loaded_window, 50, 150))) == 1, timeout=2000)
 
 
 @pytest.mark.parametrize("filter_type", list(FilterType))
