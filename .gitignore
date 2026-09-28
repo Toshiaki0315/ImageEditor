@@ -10,3 +10,6 @@ dist/
 .DS_Store
 *_edited.*
 .claude/settings.local.json
+
+# 手元で Codex 向けに使う設定ファイル（リポジトリには含めない）
+AGENTS.md
