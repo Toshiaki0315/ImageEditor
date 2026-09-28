@@ -334,6 +334,7 @@ class MainWindow(QMainWindow):
         return (
             settings.filter,
             settings.temperature,
+            settings.saturation,
             settings.vignette,
             settings.aging,
             crop,

@@ -537,3 +537,39 @@ def test_render_preview_applies_temperature():
     image = Image.new("RGB", (40, 30), (150, 150, 150))
     r, _, b = render_preview(image, EditSettings(temperature=9500)).getpixel((0, 0))
     assert b > r
+
+
+# --- 彩度 ---------------------------------------------------------------------
+
+
+def test_default_saturation_is_zero():
+    assert EditSettings().saturation == 0
+
+
+def test_saturation_is_applied():
+    image = Image.new("RGB", (20, 20), (200, 100, 50))
+    r, g, b = apply_edits(image, EditSettings(saturation=-100)).getpixel((0, 0))
+    assert max(r, g, b) - min(r, g, b) <= 1
+
+
+def test_saturation_is_applied_before_filter():
+    # 彩度を上げてもモノトーンでは色が残らない（フィルターの前にかかる）
+    image = Image.new("RGB", (20, 20), (200, 100, 50))
+    settings = EditSettings(saturation=100, filter=FilterType.MONOTONE)
+
+    r, g, b = apply_edits(image, settings).getpixel((0, 0))
+
+    assert r == g == b
+
+
+def test_saturation_after_temperature():
+    # 色温度で付いた色味も、彩度 -100 で白黒になる（色温度 → 彩度の順）
+    image = Image.new("RGB", (20, 20), (150, 150, 150))
+    r, g, b = apply_edits(image, EditSettings(temperature=2500, saturation=-100)).getpixel((0, 0))
+    assert max(r, g, b) - min(r, g, b) <= 1
+
+
+def test_render_preview_applies_saturation():
+    image = Image.new("RGB", (40, 30), (200, 100, 50))
+    r, g, b = render_preview(image, EditSettings(saturation=-100)).getpixel((0, 0))
+    assert max(r, g, b) - min(r, g, b) <= 1

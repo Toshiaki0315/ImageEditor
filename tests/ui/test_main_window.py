@@ -856,3 +856,26 @@ def test_saved_image_has_temperature(loaded_window, qtbot, tmp_path):
 
     r, _, b = load_image(out).image.getpixel((100, 150))  # 赤 (220, 60, 30)
     assert r < 220 and b > 30
+
+
+# --- 彩度 ---------------------------------------------------------------------
+
+
+def test_saturation_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.saturation_slider.setValue(-100)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    r, g, b = preview_pixel(loaded_window, 300, 150)
+    assert max(r, g, b) - min(r, g, b) <= 1
+
+
+def test_saved_image_has_saturation(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.saturation_slider.setValue(-100)
+    out = tmp_path / "gray.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    r, g, b = load_image(out).image.getpixel((100, 150))
+    assert max(r, g, b) - min(r, g, b) <= 1
