@@ -180,3 +180,63 @@ def test_drop_unsupported_does_not_emit(area, qtbot, tmp_path):
     with qtbot.assertNotEmitted(area.files_dropped):
         event = drop(area, make_mime(tmp_path / "a.webp"))
     assert not event.isAccepted()
+
+
+# --- 透過部分の市松模様 ---------------------------------------------------------
+
+
+def rendered(area):
+    """ウィジェットを描画した画像と、論理座標から実ピクセルへの倍率を返す。"""
+    pixmap = area.grab()
+    return pixmap.toImage(), pixmap.devicePixelRatio()
+
+
+def color_at(image, ratio, x, y):
+    return image.pixelColor(int(x * ratio), int(y * ratio)).getRgb()[:3]
+
+
+def test_transparent_area_shows_checkerboard(area):
+    # 1200x800 → (16, 16) から 600x400 で表示
+    area.set_image(Image.new("RGBA", (1200, 800), (0, 0, 0, 0)))
+
+    image, ratio = rendered(area)
+
+    light, dark = (255, 255, 255), (204, 204, 204)
+    assert color_at(image, ratio, 16 + 2, 16 + 2) == light
+    assert color_at(image, ratio, 16 + 8 + 2, 16 + 2) == dark
+    assert color_at(image, ratio, 16 + 2, 16 + 8 + 2) == dark
+    assert color_at(image, ratio, 16 + 8 + 2, 16 + 8 + 2) == light
+    assert color_at(image, ratio, 16 + 600 - 3, 16 + 400 - 3) in (light, dark)
+
+
+def test_checkerboard_is_only_inside_image(area):
+    # 縦長の画像 → 左右に余白ができる
+    area.set_image(Image.new("RGBA", (100, 200), (0, 0, 0, 0)))
+    background = area.palette().window().color().getRgb()[:3]
+
+    image, ratio = rendered(area)
+
+    rect = area.image_rect()
+    assert color_at(image, ratio, rect.x() - 20, 200) == background
+    assert color_at(image, ratio, rect.right() + 20, 200) == background
+
+
+def test_semi_transparent_shows_checkerboard_through(area):
+    area.set_image(Image.new("RGBA", (1200, 800), (255, 0, 0, 128)))
+
+    image, ratio = rendered(area)
+
+    # 赤が半分透けて、白マスと灰マスで色が変わる
+    on_light = color_at(image, ratio, 16 + 2, 16 + 2)
+    on_dark = color_at(image, ratio, 16 + 8 + 2, 16 + 2)
+    assert on_light != on_dark
+    assert on_light[0] > on_light[1] and on_dark[0] > on_dark[1]
+
+
+def test_opaque_image_is_unchanged(area):
+    area.set_image(Image.new("RGB", (1200, 800), (10, 120, 200)))
+
+    image, ratio = rendered(area)
+
+    assert color_at(image, ratio, 16 + 2, 16 + 2) == (10, 120, 200)
+    assert color_at(image, ratio, 16 + 8 + 2, 16 + 2) == (10, 120, 200)

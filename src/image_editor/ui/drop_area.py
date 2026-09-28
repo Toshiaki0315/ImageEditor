@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 from PyQt6.QtCore import QMimeData, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
+    QBrush,
     QColor,
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -27,6 +28,10 @@ PLACEHOLDER_TEXT = "ここに画像をドロップしてください"
 MARGIN = 16
 BORDER_RADIUS = 12
 HIGHLIGHT_FILL_ALPHA = 40
+# 透過部分の市松模様（1 マスの大きさは論理ピクセル）
+CHECKER_SIZE = 8
+CHECKER_LIGHT = QColor(255, 255, 255)
+CHECKER_DARK = QColor(204, 204, 204)
 
 
 class DropArea(QWidget):
@@ -44,6 +49,7 @@ class DropArea(QWidget):
         self._source: QImage | None = None
         self._cache: QPixmap | None = None
         self._highlighted = False
+        self._checker: QBrush | None = None
         # トリミング範囲の選択（既定は無効）
         self.crop_overlay = CropOverlay(self.image_rect, self)
 
@@ -116,7 +122,12 @@ class DropArea(QWidget):
 
         pixmap = self.display_pixmap()
         if pixmap is not None:
-            painter.drawPixmap(self.image_rect().topLeft(), pixmap)
+            image_rect = self.image_rect()
+            if self._source is not None and self._source.hasAlphaChannel():
+                # 透過部分が分かるよう、画像の範囲にだけ市松模様を敷いてから重ねる
+                painter.setBrushOrigin(image_rect.topLeft())
+                painter.fillRect(image_rect, self._checker_brush())
+            painter.drawPixmap(image_rect.topLeft(), pixmap)
         else:
             pen = QPen(highlight if self._highlighted else palette.mid().color(), 2)
             pen.setStyle(Qt.PenStyle.DashLine)
@@ -132,6 +143,21 @@ class DropArea(QWidget):
             painter.setBrush(fill)
             painter.drawRoundedRect(frame, BORDER_RADIUS, BORDER_RADIUS)
         painter.end()
+
+    def _checker_brush(self) -> QBrush:
+        """市松模様のブラシを返す。Retina でもぼやけないよう実ピクセルでタイルを作る。"""
+        ratio = self.devicePixelRatioF()
+        if self._checker is None or self._checker.texture().devicePixelRatio() != ratio:
+            cell = round(CHECKER_SIZE * ratio)
+            tile = QPixmap(cell * 2, cell * 2)
+            tile.fill(CHECKER_LIGHT)
+            tile_painter = QPainter(tile)
+            tile_painter.fillRect(cell, 0, cell, cell, CHECKER_DARK)
+            tile_painter.fillRect(0, cell, cell, cell, CHECKER_DARK)
+            tile_painter.end()
+            tile.setDevicePixelRatio(ratio)
+            self._checker = QBrush(tile)
+        return self._checker
 
     # --- D&D ----------------------------------------------------------------
 
