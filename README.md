@@ -12,6 +12,21 @@ pip install -e ".[dev]"
 python -m image_editor
 ```
 
+## macOS アプリとして使う
+
+`Image Editor.app` をビルドして、Finder・Launchpad・Dock から起動できます（自分の Mac で使う前提の ad-hoc 署名）。
+
+```bash
+source .venv/bin/activate
+pip install -e ".[app]"
+scripts/build_app.sh --install   # dist/ にビルドし、/Applications にインストール
+```
+
+- `--install` を付けなければ `dist/Image Editor.app` を作るだけ（ダブルクリックで起動できる）
+- Finder で画像を右クリック →「このアプリケーションで開く」→ Image Editor、または Dock アイコンへのドロップでも開ける
+- 予期しないエラーは `~/Library/Logs/ImageEditor/image_editor.log` に記録される
+- コードを変更したら `scripts/build_app.sh --install` を再実行して入れ替える
+
 ## ドキュメント
 
 | ファイル | 内容 |

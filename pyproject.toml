@@ -18,6 +18,10 @@ dev = [
     "pytest-qt>=4.4",
     "ruff>=0.6",
 ]
+# macOS アプリ (.app) のビルド用
+app = [
+    "pyinstaller>=6.10",
+]
 
 [project.scripts]
 image-editor = "image_editor.app:main"

@@ -675,3 +675,12 @@ def test_close_waits_for_save(loaded_window, tmp_path):
     loaded_window.close()
 
     assert out.exists()
+
+
+def test_window_title_shows_file_name(loaded_window, questions):
+    assert loaded_window.windowTitle() == "photo.png — Image Editor"
+    assert loaded_window.windowFilePath().endswith("photo.png")
+
+    loaded_window.reset()
+
+    assert loaded_window.windowTitle() == "Image Editor"
