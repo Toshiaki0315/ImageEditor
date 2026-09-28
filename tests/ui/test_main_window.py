@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QSplitter
 
@@ -218,6 +218,12 @@ def loaded_window(window, tmp_path, warnings):
     return window
 
 
+def save_and_wait(qtbot, window, path):
+    """保存を開始し、ワーカースレッドでの完了を待つ。"""
+    with qtbot.waitSignal(window.save_finished, timeout=10000):
+        assert window.save_to(path)
+
+
 def preview_pixel(window, x, y):
     return window.drop_area._source.pixelColor(x, y).getRgb()[:3]
 
@@ -262,13 +268,13 @@ def test_default_save_path():
 
 
 @pytest.mark.parametrize("suffix", [".png", ".jpg", ".gif", ".tif", ".bmp"])
-def test_saved_file_has_size_and_filter(loaded_window, tmp_path, suffix):
+def test_saved_file_has_size_and_filter(loaded_window, qtbot, tmp_path, suffix):
     panel = loaded_window.settings_panel
     panel.width_spin.setValue(200)
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
     out = tmp_path / f"out{suffix}"
 
-    assert loaded_window.save_to(out)
+    save_and_wait(qtbot, loaded_window, out)
 
     saved = load_image(out).image.convert("RGB")
     assert saved.size == (200, 150)
@@ -278,18 +284,18 @@ def test_saved_file_has_size_and_filter(loaded_window, tmp_path, suffix):
     assert panel.save_button.isEnabled()  # 処理後にボタンが戻る
 
 
-def test_save_polaroid_output_size(loaded_window, tmp_path):
+def test_save_polaroid_output_size(loaded_window, qtbot, tmp_path):
     panel = loaded_window.settings_panel
     panel.set_crop(CropRect(0, 0, 200, 200))
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.POLAROID))
     out = tmp_path / "out.png"
 
-    loaded_window.save_to(out)
+    save_and_wait(qtbot, loaded_window, out)
 
     assert load_image(out).image.size == (200 + 10 * 2, 200 + 10 + 40)
 
 
-def test_save_dialog_uses_default_name(loaded_window, tmp_path, monkeypatch):
+def test_save_dialog_uses_default_name(loaded_window, qtbot, tmp_path, monkeypatch):
     calls = []
     out = tmp_path / "chosen"  # 拡張子なし → 選んだ形式の拡張子を付ける
 
@@ -299,7 +305,8 @@ def test_save_dialog_uses_default_name(loaded_window, tmp_path, monkeypatch):
 
     monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_dialog)
 
-    loaded_window.save_action.trigger()
+    with qtbot.waitSignal(loaded_window.save_finished, timeout=10000):
+        loaded_window.save_action.trigger()
 
     assert calls == [(str(tmp_path / "photo_edited.png"), "PNG (*.png)")]
     assert (tmp_path / "chosen.jpg").exists()
@@ -314,9 +321,12 @@ def test_save_dialog_rejects_unsupported_extension(loaded_window, tmp_path, warn
     assert not (tmp_path / "x.webp").exists()
 
 
-def test_save_error_is_reported(loaded_window, tmp_path, warnings):
-    assert not loaded_window.save_to(tmp_path / "no_such_dir" / "x.png")
+def test_save_error_is_reported(loaded_window, qtbot, tmp_path, warnings):
+    with qtbot.waitSignal(loaded_window.save_failed, timeout=10000):
+        assert loaded_window.save_to(tmp_path / "no_such_dir" / "x.png")
+
     assert len(warnings) == 1
+    assert not loaded_window.is_saving()
     assert loaded_window.settings_panel.save_button.isEnabled()
 
 
@@ -350,19 +360,21 @@ def test_reset_asks_when_unsaved(loaded_window, questions):
     assert loaded_window.loaded is None
 
 
-def test_no_question_after_save(loaded_window, tmp_path, questions):
+def test_no_question_after_save(loaded_window, qtbot, tmp_path, questions):
     loaded_window.settings_panel.width_spin.setValue(100)
-    loaded_window.save_to(tmp_path / "out.png")
+    save_and_wait(qtbot, loaded_window, tmp_path / "out.png")
 
     loaded_window.reset()
 
     assert questions["asked"] == 0
+    assert loaded_window.loaded is None
 
 
-def test_change_after_save_is_unsaved(loaded_window, tmp_path, questions):
+def test_change_after_save_is_unsaved(loaded_window, qtbot, tmp_path, questions):
     panel = loaded_window.settings_panel
     panel.width_spin.setValue(100)
-    loaded_window.save_to(tmp_path / "out.png")
+    save_and_wait(qtbot, loaded_window, tmp_path / "out.png")
+    assert not loaded_window.has_unsaved_changes()
     panel.width_spin.setValue(120)
 
     assert loaded_window.has_unsaved_changes()
@@ -473,7 +485,7 @@ def test_dragged_range_matches_saved_image(loaded_window, qtbot, tmp_path):
     # 元画像は左半分 (x < 200) が赤、右半分が青。境界をまたいで 100〜300 を選ぶ
     drag_on_overlay(qtbot, loaded_window, (100, 50), (300, 250))
     out = tmp_path / "cropped.png"
-    loaded_window.save_to(out)
+    save_and_wait(qtbot, loaded_window, out)
 
     saved = load_image(out).image
     assert abs(saved.width - 200) <= 1 and abs(saved.height - 200) <= 1
@@ -506,3 +518,160 @@ def test_loading_new_image_leaves_crop_mode(loaded_window, tmp_path):
 
     assert not loaded_window.settings_panel.is_crop_mode()
     assert not loaded_window.drop_area.crop_overlay.is_active()
+
+
+# --- 縮小プレビューとワーカースレッド -------------------------------------------
+
+
+@pytest.fixture
+def wide_window(window, tmp_path, warnings):
+    """長辺 1600px を超える画像 (3200x800) を読み込んだウィンドウ。"""
+    path = tmp_path / "wide.png"
+    image = Image.new("RGB", (3200, 800), (40, 120, 200))
+    image.paste((220, 60, 30), (0, 0, 1600, 800))
+    image.save(path)
+    window.load_file(path)
+    return window
+
+
+def test_preview_uses_downscaled_image(wide_window):
+    source = wide_window.drop_area._source
+    assert (source.width(), source.height()) == (1600, 400)
+    # ステータスバーは原寸
+    assert "原寸 3200×800 px" in wide_window.status_label.text()
+
+
+def test_preview_settings_are_scaled(wide_window):
+    panel = wide_window.settings_panel
+    panel.set_crop(CropRect(1200, 0, 800, 800))  # 赤と青の境界をまたぐ
+
+    wide_window.update_preview()
+
+    source = wide_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 400)  # 800x800 の 1/2
+    assert source.pixelColor(50, 200).getRgb()[:3] == (220, 60, 30)
+    assert source.pixelColor(350, 200).getRgb()[:3] == (40, 120, 200)
+    assert "出力 800×800 px" in wide_window.status_label.text()
+
+
+def test_crop_mode_shows_downscaled_original(wide_window, qtbot):
+    panel = wide_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+
+    # 縮小表示でも、ドラッグ範囲は原画像の座標系で得られる
+    drag_on_overlay(qtbot, wide_window, (400, 100), (2000, 700))
+
+    assert wide_window.drop_area._source.width() == 1600
+    rect = panel.settings().crop
+    assert rect is not None
+    assert abs(rect.x - 400) <= 2 and abs(rect.width - 1600) <= 2
+
+
+def test_auto_preview_after_debounce(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    before = preview_pixel(loaded_window, 50, 150)
+
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
+
+    # すぐには更新されず、300ms 後に自動で更新される
+    assert preview_pixel(loaded_window, 50, 150) == before
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 50, 150) != before, timeout=2000)
+    r, g, b = preview_pixel(loaded_window, 50, 150)
+    assert r == g == b
+
+
+def test_auto_preview_is_debounced(loaded_window, qtbot, monkeypatch):
+    calls = []
+    original = loaded_window.update_preview
+    monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
+
+    panel = loaded_window.settings_panel
+    for width in (390, 380, 370, 360):
+        panel.width_spin.setValue(width)
+
+    qtbot.wait(600)
+    assert len(calls) == 1
+
+
+def test_no_auto_preview_in_crop_mode(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+
+    panel.set_crop(CropRect(0, 0, 100, 100))
+    qtbot.wait(500)
+
+    assert panel.is_crop_mode()
+    assert loaded_window.drop_area._source.width() == 400  # 元画像のまま
+
+
+def test_save_runs_in_worker_thread(loaded_window, qtbot, tmp_path, monkeypatch):
+    import threading
+
+    import image_editor.ui.worker as worker
+
+    started = threading.Event()
+    release = threading.Event()
+    threads = []
+    real_save = worker.save_image
+
+    def slow_save(image, path, *args, **kwargs):
+        threads.append(threading.current_thread())
+        started.set()
+        release.wait(5)
+        real_save(image, path, *args, **kwargs)
+
+    monkeypatch.setattr(worker, "save_image", slow_save)
+    panel = loaded_window.settings_panel
+    out = tmp_path / "slow.png"
+
+    assert loaded_window.save_to(out)  # すぐ戻る
+    assert started.wait(5)
+
+    # 保存中: UI は動き続け、ボタン類は無効
+    assert loaded_window.is_saving()
+    assert not panel.save_button.isEnabled()
+    assert not panel.reset_button.isEnabled()
+    assert not loaded_window.open_action.isEnabled()
+    assert not loaded_window.drop_area.acceptDrops()
+    assert "保存中" in loaded_window.status_label.text()
+    ticks = []
+    QTimer.singleShot(10, lambda: ticks.append(1))
+    qtbot.waitUntil(lambda: ticks == [1], timeout=1000)  # イベントループが回っている
+    assert not loaded_window.save_to(tmp_path / "second.png")  # 二重保存しない
+
+    with qtbot.waitSignal(loaded_window.save_finished, timeout=5000):
+        release.set()
+
+    assert threads[0] is not threading.main_thread()
+    assert out.exists()
+    assert panel.save_button.isEnabled()
+    assert loaded_window.open_action.isEnabled()
+    assert loaded_window.drop_area.acceptDrops()
+
+
+def test_load_is_blocked_while_saving(loaded_window, qtbot, tmp_path, monkeypatch):
+    import threading
+
+    import image_editor.ui.worker as worker
+
+    release = threading.Event()
+    real_save = worker.save_image
+    monkeypatch.setattr(worker, "save_image", lambda *a, **k: (release.wait(5), real_save(*a, **k)))
+    other = tmp_path / "other.png"
+    Image.new("RGB", (10, 10)).save(other)
+
+    loaded_window.save_to(tmp_path / "out.png")
+    assert not loaded_window.load_file(other)
+
+    with qtbot.waitSignal(loaded_window.save_finished, timeout=5000):
+        release.set()
+    assert loaded_window.loaded.path.name == "photo.png"
+
+
+def test_close_waits_for_save(loaded_window, tmp_path):
+    out = tmp_path / "on_close.png"
+
+    loaded_window.save_to(out)
+    loaded_window.close()
+
+    assert out.exists()

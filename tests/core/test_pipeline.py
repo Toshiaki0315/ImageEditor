@@ -2,11 +2,17 @@ import subprocess
 import sys
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 from image_editor.core import filters, pipeline, transform
 from image_editor.core.filters import FilterType
-from image_editor.core.pipeline import EditSettings, apply_edits, output_size, scale_settings
+from image_editor.core.pipeline import (
+    EditSettings,
+    apply_edits,
+    make_preview,
+    output_size,
+    scale_settings,
+)
 from image_editor.core.transform import CropRect
 
 RED = (255, 0, 0)
@@ -258,3 +264,60 @@ def test_core_pipeline_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+# --- make_preview -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("size", "expected_size"),
+    [
+        ((4000, 3000), (1600, 1200)),
+        ((3000, 4000), (1200, 1600)),
+        ((3201, 100), (1600, 50)),
+    ],
+)
+def test_make_preview_shrinks_long_side(size, expected_size):
+    original = Image.new("RGB", size, (10, 20, 30))
+
+    preview, factor = make_preview(original)
+
+    assert preview.size == expected_size
+    assert factor == pytest.approx(1600 / max(size))
+    assert preview.getpixel((0, 0)) == (10, 20, 30)
+    assert original.size == size
+
+
+@pytest.mark.parametrize("size", [(1600, 1200), (800, 600), (1, 1)])
+def test_make_preview_keeps_small_image(size):
+    original = Image.new("RGB", size)
+
+    preview, factor = make_preview(original)
+
+    assert preview is original
+    assert factor == 1.0
+
+
+def test_make_preview_keeps_alpha():
+    preview, _ = make_preview(Image.new("RGBA", (3200, 100), (100, 150, 200, 128)))
+    assert preview.mode == "RGBA"
+    pixel = preview.getpixel((10, 10))
+    assert pixel[3] == 128
+    assert all(abs(a - b) <= 2 for a, b in zip(pixel[:3], (100, 150, 200), strict=True))
+
+
+@pytest.mark.parametrize("filter_type", list(FilterType))
+def test_preview_looks_like_full_result(filter_type):
+    # 縮小版に換算した設定を適用した結果が、原寸の結果を縮小したものとほぼ一致する
+    original = Image.linear_gradient("L").resize((3200, 2400)).convert("RGB")
+    original.paste((200, 50, 50), (400, 400, 1600, 1200))
+    settings = EditSettings(crop=CropRect(200, 200, 2400, 1800), width=1200, filter=filter_type)
+
+    preview, factor = make_preview(original)
+    small = apply_edits(preview, scale_settings(settings, factor))
+    full = apply_edits(original, settings).resize(small.size, Image.Resampling.LANCZOS)
+
+    assert abs(small.width - full.width) <= 1 and abs(small.height - full.height) <= 1
+    diff = ImageChops.difference(small, full)
+    mean = sum(ImageStat.Stat(diff).mean) / 3
+    assert mean < 3
