@@ -19,6 +19,9 @@ from image_editor.core.filters import FilterType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop, fit_size
 
+# 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
+BLANK_TEXT = " "
+
 
 class SettingsPanel(QWidget):
     """編集設定を入力するパネル。入力が変わるたびに settings_changed を発行する。
@@ -109,6 +112,7 @@ class SettingsPanel(QWidget):
         self._size_edited = False
         self._last_edited = "width"
         with self._block():
+            self._show_blank(size is None)
             width, height = size or (MIN_SIZE, MIN_SIZE)
             self.crop_x_spin.setMaximum(max(0, width - 1))
             self.crop_y_spin.setMaximum(max(0, height - 1))
@@ -118,12 +122,17 @@ class SettingsPanel(QWidget):
                 spin.setValue(0)
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
-            self._set_size_spins(self.base_size())
+            if size is None:
+                self._set_size_spins((0, 0))  # 空欄表示
+            else:
+                self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
         self._emit_changed()
 
     def settings(self) -> EditSettings:
-        """現在の入力から EditSettings を組み立てる。"""
+        """現在の入力から EditSettings を組み立てる。未読込なら既定値を返す。"""
+        if self._image_size is None:
+            return EditSettings()
         crop = self._crop_rect()
         keep_aspect = self.keep_aspect_check.isChecked()
         width: int | None = self.width_spin.value()
@@ -209,6 +218,19 @@ class SettingsPanel(QWidget):
             size = fit_size(base, None, self.height_spin.value(), keep_aspect=True)
         with self._block():
             self._set_size_spins(size)
+
+    def _show_blank(self, blank: bool) -> None:
+        """未読込時は数値欄を空欄で表示する。
+
+        幅・高さは最小値を 0 にして 0 を空欄で表示し、読み込み後は最小値を 1 に戻す
+        （1 px は有効な値なので空欄にならない）。トリミング欄の 0 は読み込み後は表示する。
+        """
+        text = BLANK_TEXT if blank else ""
+        for spin in (self.width_spin, self.height_spin):
+            spin.setMinimum(0 if blank else MIN_SIZE)
+            spin.setSpecialValueText(text)
+        for spin in self._crop_spins():
+            spin.setSpecialValueText(text)
 
     def _set_size_spins(self, size: tuple[int, int]) -> None:
         # 計算結果が上限を超える場合は上限に丸める（QSpinBox の範囲外は設定できない）

@@ -189,3 +189,49 @@ def test_set_busy_disables_buttons(panel):
 
     panel.set_busy(False)
     assert panel.save_button.isEnabled()
+
+
+# --- 未読込時の空欄表示 ---------------------------------------------------------
+
+
+def all_spins(panel):
+    return [
+        panel.width_spin,
+        panel.height_spin,
+        panel.crop_x_spin,
+        panel.crop_y_spin,
+        panel.crop_width_spin,
+        panel.crop_height_spin,
+    ]
+
+
+def test_fields_are_blank_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+
+    assert [spin.text().strip() for spin in all_spins(widget)] == [""] * 6
+    assert widget.settings() == EditSettings()
+
+
+def test_fields_show_values_after_load(panel):
+    texts = [spin.text() for spin in all_spins(panel)]
+    assert texts == ["400 px", "300 px", "0 px", "0 px", "0 px", "0 px"]
+
+
+def test_one_px_is_shown_after_load(panel):
+    panel.keep_aspect_check.setChecked(False)
+    panel.width_spin.setValue(1)
+
+    assert panel.width_spin.text() == "1 px"
+    assert panel.width_spin.minimum() == 1
+    assert panel.settings().width == 1
+
+
+def test_fields_are_blank_again_after_reset(panel):
+    panel.width_spin.setValue(100)
+    panel.set_crop(CropRect(10, 10, 50, 50))
+
+    panel.set_image_size(None)
+
+    assert [spin.text().strip() for spin in all_spins(panel)] == [""] * 6
+    assert panel.settings() == EditSettings()
