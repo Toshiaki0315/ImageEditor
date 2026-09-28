@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QSplitter
 
@@ -9,6 +10,7 @@ from image_editor.app import create_window
 from image_editor.core.filters import FilterType
 from image_editor.core.io import load_image
 from image_editor.core.transform import CropRect
+from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path
 
 
@@ -376,3 +378,131 @@ def test_loading_another_image_asks_when_unsaved(loaded_window, tmp_path, questi
 
     assert questions["asked"] == 1
     assert loaded_window.loaded.path.name == "photo.png"
+
+
+# --- プレビュー上のトリミング -------------------------------------------------
+
+
+def overlay_point(window, x, y):
+    """原画像座標 (x, y) に対応するオーバーレイ上の座標。"""
+    rect = window.drop_area.image_rect()
+    point = image_to_widget(x, y, rect, window.loaded.image.size)
+    return QPoint(round(point.x()), round(point.y()))
+
+
+def drag_on_overlay(qtbot, window, start, end):
+    overlay = window.drop_area.crop_overlay
+    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=overlay_point(window, *start))
+    qtbot.mouseMove(overlay, overlay_point(window, *end))
+    qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=overlay_point(window, *end))
+
+
+def test_crop_mode_shows_original_with_overlay(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.width_spin.setValue(100)
+    loaded_window.update_preview()
+    assert loaded_window.drop_area._source.width() == 100
+
+    panel.crop_mode_check.setChecked(True)
+
+    assert loaded_window.drop_area.crop_overlay.is_active()
+    assert loaded_window.drop_area._source.width() == 400  # 元画像全体
+
+
+def test_crop_mode_off_shows_result(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+    panel.set_crop(CropRect(0, 0, 100, 50))
+
+    panel.crop_mode_check.setChecked(False)
+
+    assert not loaded_window.drop_area.crop_overlay.is_active()
+    assert loaded_window.drop_area._source.width() == 100
+
+
+def test_preview_update_leaves_crop_mode(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+    panel.set_crop(CropRect(0, 0, 100, 50))
+
+    loaded_window.preview_action.trigger()
+
+    assert not panel.is_crop_mode()
+    assert not loaded_window.drop_area.crop_overlay.is_active()
+    assert loaded_window.drop_area._source.width() == 100
+
+
+def test_drag_updates_spin_boxes(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+
+    drag_on_overlay(qtbot, loaded_window, (50, 40), (250, 190))
+
+    rect = panel.settings().crop
+    assert rect is not None
+    for actual, expected in zip(
+        (rect.x, rect.y, rect.width, rect.height), (50, 40, 200, 150), strict=True
+    ):
+        assert abs(actual - expected) <= 1
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (rect.width, rect.height)
+
+
+def test_spin_boxes_update_overlay(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+
+    panel.set_crop(CropRect(10, 20, 30, 40))
+
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(10, 20, 30, 40)
+
+
+def test_clear_button_clears_overlay(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+    panel.set_crop(CropRect(10, 20, 30, 40))
+
+    panel.clear_crop_button.click()
+
+    assert loaded_window.drop_area.crop_overlay.crop() is None
+
+
+def test_dragged_range_matches_saved_image(loaded_window, qtbot, tmp_path):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+
+    # 元画像は左半分 (x < 200) が赤、右半分が青。境界をまたいで 100〜300 を選ぶ
+    drag_on_overlay(qtbot, loaded_window, (100, 50), (300, 250))
+    out = tmp_path / "cropped.png"
+    loaded_window.save_to(out)
+
+    saved = load_image(out).image
+    assert abs(saved.width - 200) <= 1 and abs(saved.height - 200) <= 1
+    # 切り抜き範囲の左半分が赤、右半分が青
+    assert saved.getpixel((10, 100)) == (220, 60, 30)
+    assert saved.getpixel((saved.width - 10, 100)) == (40, 120, 200)
+
+
+def test_drag_outside_is_clamped_in_panel(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.crop_mode_check.setChecked(True)
+    overlay = loaded_window.drop_area.crop_overlay
+
+    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=overlay_point(loaded_window, 300, 200))
+    qtbot.mouseMove(overlay, QPoint(overlay.width() - 1, overlay.height() - 1))
+    qtbot.mouseRelease(
+        overlay, Qt.MouseButton.LeftButton, pos=QPoint(overlay.width() - 1, overlay.height() - 1)
+    )
+
+    assert panel.settings().crop == CropRect(300, 200, 100, 100)
+
+
+def test_loading_new_image_leaves_crop_mode(loaded_window, tmp_path):
+    loaded_window.settings_panel.crop_mode_check.setChecked(True)
+    other = tmp_path / "other.png"
+    Image.new("RGB", (50, 50)).save(other)
+    loaded_window.settings_panel.clear_crop()  # 未保存の変更なし
+
+    loaded_window.load_file(other)
+
+    assert not loaded_window.settings_panel.is_crop_mode()
+    assert not loaded_window.drop_area.crop_overlay.is_active()
