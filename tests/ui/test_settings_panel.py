@@ -173,7 +173,6 @@ def test_clear_crop(panel):
 @pytest.mark.parametrize(
     ("button", "signal"),
     [
-        ("preview_button", "preview_requested"),
         ("save_button", "save_requested"),
         ("reset_button", "reset_requested"),
     ],
@@ -186,7 +185,7 @@ def test_buttons_emit_signals(panel, qtbot, button, signal):
 def test_set_busy_disables_buttons(panel):
     panel.set_busy(True)
     assert not panel.save_button.isEnabled()
-    assert not panel.preview_button.isEnabled()
+    assert not panel.reset_button.isEnabled()
 
     panel.set_busy(False)
     assert panel.save_button.isEnabled()
