@@ -833,3 +833,26 @@ def test_saved_image_has_aging(loaded_window, qtbot, tmp_path):
 
     r, _, b = load_image(out).image.getpixel((300, 150))
     assert b - r < 200 - 40
+
+
+# --- 色温度 -------------------------------------------------------------------
+
+
+def test_temperature_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.temperature_slider.setValue(25)  # 2500K
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    r, _, b = preview_pixel(loaded_window, 300, 150)
+    assert r > before[0] and b < before[2]
+
+
+def test_saved_image_has_temperature(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.temperature_slider.setValue(100)  # 10000K
+    out = tmp_path / "cool.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    r, _, b = load_image(out).image.getpixel((100, 150))  # 赤 (220, 60, 30)
+    assert r < 220 and b > 30

@@ -331,7 +331,14 @@ class MainWindow(QMainWindow):
         trimmed = self.settings_panel.is_trim_view()
         # トリミング範囲は、切り抜き表示中か周辺減光があるときだけ見た目に影響する
         crop = settings.crop if trimmed or settings.vignette else None
-        return (settings.filter, settings.vignette, settings.aging, crop, trimmed)
+        return (
+            settings.filter,
+            settings.temperature,
+            settings.vignette,
+            settings.aging,
+            crop,
+            trimmed,
+        )
 
     def _on_trim_view_toggled(self, trimmed: bool) -> None:
         """切り抜き後の表示ではドラッグでの範囲選択を止め、全体表示に戻したら再開する。"""

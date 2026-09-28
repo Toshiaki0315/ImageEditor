@@ -349,3 +349,34 @@ def test_aging_is_reset_on_new_image(panel):
 
     assert panel.aging_slider.value() == 0
     assert panel.aging_value_label.text() == "0"
+
+
+# --- 色温度 -------------------------------------------------------------------
+
+
+def test_temperature_slider(panel, qtbot):
+    assert panel.temperature_kelvin() == 6500
+    assert panel.temperature_value_label.text() == "6500 K"
+    assert panel.settings() == EditSettings()
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.temperature_slider.setValue(32)
+
+    assert blocker.args[0].temperature == 3200
+    assert panel.temperature_value_label.text() == "3200 K"
+
+
+def test_temperature_slider_range(panel):
+    panel.temperature_slider.setValue(0)
+    assert panel.temperature_kelvin() == 2000
+    panel.temperature_slider.setValue(1000)
+    assert panel.temperature_kelvin() == 10000
+
+
+def test_temperature_is_reset_on_new_image(panel):
+    panel.temperature_slider.setValue(40)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.temperature_kelvin() == 6500
+    assert panel.temperature_value_label.text() == "6500 K"

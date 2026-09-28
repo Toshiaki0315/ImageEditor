@@ -1,4 +1,4 @@
-"""フィルターの後にかける効果（周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（色温度・周辺減光・経年劣化）。"""
 
 from __future__ import annotations
 
@@ -28,6 +28,14 @@ AGING_MAX_WHITE_DROP = 25  # 白をどれだけ抑えるか（フェード）
 AGING_MAX_TINT = (1.08, 1.0, 0.72)  # R, G, B に掛ける係数（黄ばみ・青の抜け）
 AGING_MAX_GRAIN = 14  # 粒子の強さ（明るさの最大変化量）
 AGING_GRAIN_SEED = 19700101  # 粒子の模様を毎回同じにするための乱数シード
+
+# 色温度（ケルビン）。指定した色温度の光で照らしたような色にする
+TEMPERATURE_MIN = 2000  # ろうそく・電球色（暖色）
+TEMPERATURE_MAX = 10000  # 曇り空・日陰（青み）
+TEMPERATURE_NEUTRAL = 6500  # 昼光。この値では変化なし
+TEMPERATURE_STEP = 100
+TEMPERATURE_STRENGTH = 0.5  # 黒体放射の色の差をどれだけ反映するか（1 = そのまま）
+_LUMA = (0.299, 0.587, 0.114)
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -99,3 +107,56 @@ def _check_amount(name: str, amount: int, minimum: int, maximum: int) -> None:
 def _clip_table(values: list[float]) -> list[int]:
     """四捨五入して 0〜255 にクリップしたルックアップテーブルを返す。"""
     return [min(255, max(0, int(v + 0.5))) for v in values]
+
+
+def color_temperature(image: Image.Image, kelvin: int) -> Image.Image:
+    """指定した色温度の光で照らしたような色にした新しい画像を返す（入力画像は変更しない）。
+
+    kelvin は 2000〜10000。6500 は変化なし、低いほど暖色、高いほど青みになる。
+    明るさはほぼ保つ。RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("色温度", kelvin, TEMPERATURE_MIN, TEMPERATURE_MAX)
+    if kelvin == TEMPERATURE_NEUTRAL:
+        return image.copy()
+
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    tables: list[float] = []
+    for multiplier in temperature_multipliers(kelvin):
+        tables += [v * multiplier for v in range(256)]
+    rgb = image.convert("RGB").point(_clip_table(tables))
+
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
+
+
+def temperature_multipliers(kelvin: int) -> tuple[float, float, float]:
+    """色温度に対する R / G / B の倍率を返す（6500K で 1、明るさ (輝度) は 1 に正規化）。"""
+    reference = kelvin_to_rgb(TEMPERATURE_NEUTRAL)
+    color = kelvin_to_rgb(kelvin)
+    raw = [1 + (c / r - 1) * TEMPERATURE_STRENGTH for c, r in zip(color, reference, strict=True)]
+    luma = sum(weight * m for weight, m in zip(_LUMA, raw, strict=True))
+    red, green, blue = (m / luma for m in raw)
+    return red, green, blue
+
+
+def kelvin_to_rgb(kelvin: float) -> tuple[float, float, float]:
+    """黒体放射の色温度に対応する RGB (0〜255) の近似値を返す（Tanner Helland の近似式）。"""
+    t = kelvin / 100
+    if t <= 66:
+        red = 255.0
+        green = 99.4708025861 * math.log(t) - 161.1195681661
+    else:
+        red = 329.698727446 * (t - 60) ** -0.1332047592
+        green = 288.1221695283 * (t - 60) ** -0.0755148492
+    if t >= 66:
+        blue = 255.0
+    elif t <= 19:
+        blue = 0.0
+    else:
+        blue = 138.5177312231 * math.log(t - 10) - 305.0447927307
+
+    def clip(value: float) -> float:
+        return min(255.0, max(1.0, value))  # 0 だと倍率計算で割れないので下限は 1
+
+    return clip(red), clip(green), clip(blue)

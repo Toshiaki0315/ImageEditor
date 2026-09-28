@@ -502,3 +502,38 @@ def test_render_preview_applies_aging():
     # 経年劣化はトリミング範囲の外（マスク表示の部分）にもかける
     r, _, b = result.getpixel((10, 10))
     assert r - b > 40
+
+
+# --- 色温度 -------------------------------------------------------------------
+
+
+def test_default_temperature_is_neutral():
+    assert EditSettings().temperature == 6500
+
+
+def test_temperature_is_applied():
+    image = Image.new("RGB", (50, 50), (150, 150, 150))
+    r, _, b = apply_edits(image, EditSettings(temperature=3000)).getpixel((0, 0))
+    assert r > b
+
+
+def test_temperature_is_applied_before_filter():
+    # モノトーンはフィルターの前の色温度を打ち消す（色味が残らない）
+    image = Image.new("RGB", (50, 50), (150, 150, 150))
+    settings = EditSettings(temperature=2500, filter=FilterType.MONOTONE)
+
+    r, g, b = apply_edits(image, settings).getpixel((0, 0))
+
+    assert r == g == b
+
+
+def test_temperature_does_not_touch_polaroid_border():
+    image = Image.new("RGB", (200, 200), (150, 150, 150))
+    result = apply_edits(image, EditSettings(temperature=2500, filter=FilterType.POLAROID))
+    assert result.getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_render_preview_applies_temperature():
+    image = Image.new("RGB", (40, 30), (150, 150, 150))
+    r, _, b = render_preview(image, EditSettings(temperature=9500)).getpixel((0, 0))
+    assert b > r

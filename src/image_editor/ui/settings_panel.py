@@ -17,7 +17,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from image_editor.core.effects import AGING_MAX, AGING_MIN, VIGNETTE_MAX, VIGNETTE_MIN
+from image_editor.core.effects import (
+    AGING_MAX,
+    AGING_MIN,
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
+    TEMPERATURE_NEUTRAL,
+    TEMPERATURE_STEP,
+    VIGNETTE_MAX,
+    VIGNETTE_MIN,
+)
 from image_editor.core.filters import FilterType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop, fit_size
@@ -67,9 +76,17 @@ class SettingsPanel(QWidget):
             VIGNETTE_MIN, VIGNETTE_MAX
         )
         self.aging_slider, self.aging_value_label, aging_row = _amount_slider(AGING_MIN, AGING_MAX)
+        # 色温度は 100K 刻み。スライダーの値は「ケルビン ÷ 100」で持つ
+        self.temperature_slider, self.temperature_value_label, temperature_row = _amount_slider(
+            TEMPERATURE_MIN // TEMPERATURE_STEP, TEMPERATURE_MAX // TEMPERATURE_STEP
+        )
+        self.temperature_slider.setPageStep(5)
+        self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
+        self.temperature_value_label.setText(_kelvin_text(TEMPERATURE_NEUTRAL))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
+        filter_form.addRow("色温度", temperature_row)
         filter_form.addRow("周辺減光", vignette_row)
         filter_form.addRow("経年劣化", aging_row)
 
@@ -117,6 +134,7 @@ class SettingsPanel(QWidget):
         self.trim_button.toggled.connect(self._on_trim_toggled)
         self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
         self.aging_slider.valueChanged.connect(self._on_aging_changed)
+        self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -142,6 +160,7 @@ class SettingsPanel(QWidget):
             self.filter_combo.setCurrentIndex(0)
             self.vignette_slider.setValue(0)
             self.aging_slider.setValue(0)
+            self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -175,6 +194,7 @@ class SettingsPanel(QWidget):
             filter=self.filter_combo.currentData(),
             vignette=self.vignette_slider.value(),
             aging=self.aging_slider.value(),
+            temperature=self.temperature_kelvin(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -238,6 +258,14 @@ class SettingsPanel(QWidget):
 
     def _on_aging_changed(self, value: int) -> None:
         self.aging_value_label.setText(str(value))
+        self._emit_changed()
+
+    def temperature_kelvin(self) -> int:
+        """色温度スライダーの値をケルビンで返す。"""
+        return self.temperature_slider.value() * TEMPERATURE_STEP
+
+    def _on_temperature_changed(self, _value: int) -> None:
+        self.temperature_value_label.setText(_kelvin_text(self.temperature_kelvin()))
         self._emit_changed()
 
     def _on_trim_toggled(self, checked: bool) -> None:
@@ -337,13 +365,17 @@ class _Updating:
         self._panel._updating = self._previous
 
 
+def _kelvin_text(kelvin: int) -> str:
+    return f"{kelvin} K"
+
+
 def _amount_slider(minimum: int, maximum: int) -> tuple[QSlider, QLabel, QHBoxLayout]:
     """強さを指定するスライダーと、現在値を表示するラベルを横に並べて返す。"""
     slider = QSlider(Qt.Orientation.Horizontal)
     slider.setRange(minimum, maximum)
     slider.setPageStep(10)
     label = QLabel(str(minimum))
-    label.setMinimumWidth(28)
+    label.setMinimumWidth(64)  # 「10000 K」が入る幅で、各スライダーの長さをそろえる
     label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     row = QHBoxLayout()
     row.addWidget(slider)
