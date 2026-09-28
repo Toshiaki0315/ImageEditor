@@ -325,3 +325,27 @@ def test_trim_view_does_not_change_settings(panel):
 def test_set_trim_view_ignored_without_crop(panel):
     panel.set_trim_view(True)
     assert not panel.is_trim_view()
+
+
+# --- 経年劣化 -----------------------------------------------------------------
+
+
+def test_aging_slider(panel, qtbot):
+    assert panel.aging_slider.value() == 0
+    assert (panel.aging_slider.minimum(), panel.aging_slider.maximum()) == (0, 100)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.aging_slider.setValue(65)
+
+    assert blocker.args[0].aging == 65
+    assert panel.aging_value_label.text() == "65"
+    assert panel.settings() == EditSettings(aging=65)
+
+
+def test_aging_is_reset_on_new_image(panel):
+    panel.aging_slider.setValue(80)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.aging_slider.value() == 0
+    assert panel.aging_value_label.text() == "0"
