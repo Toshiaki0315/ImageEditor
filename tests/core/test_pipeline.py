@@ -1,0 +1,260 @@
+import subprocess
+import sys
+
+import pytest
+from PIL import Image
+
+from image_editor.core import filters, pipeline, transform
+from image_editor.core.filters import FilterType
+from image_editor.core.pipeline import EditSettings, apply_edits, output_size, scale_settings
+from image_editor.core.transform import CropRect
+
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+WHITE = (255, 255, 255)
+
+
+def make_sample(mode: str = "RGB") -> Image.Image:
+    """400x300。左上 200x100 が赤、それ以外が青。"""
+    image = Image.new("RGB", (400, 300), BLUE)
+    image.paste(RED, (0, 0, 200, 100))
+    return image.convert(mode)
+
+
+# --- EditSettings -------------------------------------------------------------
+
+
+def test_default_settings_do_nothing():
+    image = make_sample()
+
+    result = apply_edits(image, EditSettings())
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+def test_settings_are_frozen():
+    settings = EditSettings()
+    with pytest.raises(AttributeError):
+        settings.width = 10  # type: ignore[misc]
+
+
+# --- 処理順序 -----------------------------------------------------------------
+
+
+class _Recorder:
+    """モジュールの指定関数だけ呼び出しを記録し、他はそのまま委譲するプロキシ。"""
+
+    def __init__(self, module, names, calls):
+        self._module = module
+        for name in names:
+            setattr(self, name, self._wrap(name, getattr(module, name), calls))
+
+    @staticmethod
+    def _wrap(name, func, calls):
+        def wrapper(*args, **kwargs):
+            calls.append(name)
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    def __getattr__(self, item):
+        return getattr(self._module, item)
+
+
+def test_steps_are_called_in_order(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(pipeline, "transform", _Recorder(transform, ["crop", "resize"], calls))
+    monkeypatch.setattr(pipeline, "filters", _Recorder(filters, ["apply_filter"], calls))
+
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), width=100, filter=FilterType.SEPIA)
+    apply_edits(make_sample(), settings)
+
+    assert calls == ["crop", "resize", "apply_filter"]
+
+
+def test_crop_before_resize():
+    # 赤い領域 (200x100) を切り抜いてから幅 100 に縮小 → 100x50 の赤一色
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), width=100)
+
+    result = apply_edits(make_sample(), settings)
+
+    assert result.size == (100, 50)
+    assert result.getcolors() == [(100 * 50, RED)]
+
+
+def test_resize_uses_cropped_size_for_aspect():
+    settings = EditSettings(crop=CropRect(0, 0, 200, 50), height=100)
+    assert apply_edits(make_sample(), settings).size == (400, 100)
+
+
+def test_filter_after_resize():
+    # ポラロイドの枠はリサイズ後のサイズ基準で付く（枠自体は縮小されない）
+    settings = EditSettings(width=100, height=100, keep_aspect=False, filter=FilterType.POLAROID)
+
+    result = apply_edits(make_sample(), settings)
+
+    assert result.size == (100 + 5 * 2, 100 + 5 + 20)
+    assert result.getpixel((0, 0)) == WHITE
+    assert result.getpixel((50, result.height - 1)) == WHITE
+
+
+def test_crop_out_of_image_is_clamped():
+    settings = EditSettings(crop=CropRect(300, 200, 500, 500))
+    assert apply_edits(make_sample(), settings).size == (100, 100)
+
+
+def test_empty_crop_is_ignored():
+    settings = EditSettings(crop=CropRect(10, 10, 0, 0))
+    assert apply_edits(make_sample(), settings).size == (400, 300)
+
+
+# --- output_size --------------------------------------------------------------
+
+SETTINGS_CASES = [
+    EditSettings(),
+    EditSettings(width=123),
+    EditSettings(height=77),
+    EditSettings(width=120, height=500),
+    EditSettings(width=120, height=500, keep_aspect=False),
+    EditSettings(crop=CropRect(10, 20, 150, 90)),
+    EditSettings(crop=CropRect(10, 20, 150, 90), width=333),
+    EditSettings(crop=CropRect(-50, -50, 1000, 1000), height=1),
+    EditSettings(crop=CropRect(5, 5, 0, 10), width=1),
+    EditSettings(width=20000, keep_aspect=False),
+]
+
+
+@pytest.mark.parametrize("filter_type", list(FilterType))
+@pytest.mark.parametrize("settings", SETTINGS_CASES)
+def test_output_size_matches_apply_edits(settings, filter_type):
+    settings = EditSettings(
+        crop=settings.crop,
+        width=settings.width,
+        height=settings.height,
+        keep_aspect=settings.keep_aspect,
+        filter=filter_type,
+    )
+    original = make_sample()
+
+    assert output_size(original.size, settings) == apply_edits(original, settings).size
+
+
+# --- 非破壊 -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("filter_type", list(FilterType))
+@pytest.mark.parametrize("mode", ["RGB", "RGBA"])
+def test_original_is_not_modified(filter_type, mode):
+    original = make_sample(mode)
+    before = (original.mode, original.size, original.tobytes())
+    settings = EditSettings(crop=CropRect(10, 10, 100, 100), width=50, filter=filter_type)
+
+    apply_edits(original, settings)
+    apply_edits(original, settings)
+
+    assert (original.mode, original.size, original.tobytes()) == before
+
+
+def test_repeated_apply_gives_same_result():
+    # 原画像から毎回処理し直すので、何度適用しても結果は同じ (FR-PRC-01)
+    original = make_sample()
+    settings = EditSettings(filter=FilterType.HIGH_TONE)
+
+    first = apply_edits(original, settings)
+    second = apply_edits(original, settings)
+
+    assert first.tobytes() == second.tobytes()
+
+
+def test_alpha_is_preserved():
+    original = make_sample("RGBA")
+    original.putalpha(128)
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), width=50, filter=FilterType.SEPIA)
+
+    result = apply_edits(original, settings)
+
+    assert result.mode == "RGBA"
+    assert result.getpixel((25, 12))[3] == 128
+
+
+# --- scale_settings -----------------------------------------------------------
+
+
+def test_scale_settings():
+    settings = EditSettings(
+        crop=CropRect(100, 40, 800, 600),
+        width=400,
+        height=None,
+        keep_aspect=True,
+        filter=FilterType.POLAROID,
+    )
+
+    scaled = scale_settings(settings, 0.25)
+
+    assert scaled == EditSettings(
+        crop=CropRect(25, 10, 200, 150),
+        width=100,
+        height=None,
+        keep_aspect=True,
+        filter=FilterType.POLAROID,
+    )
+    assert settings.crop == CropRect(100, 40, 800, 600)  # 元の設定は変わらない
+
+
+def test_scale_settings_keeps_edges_aligned():
+    # 右端 (1 + 3 = 4) を換算すると 2 → 幅 1。幅だけ換算すると 1.5 → 2 で右端が 3 にずれる
+    scaled = scale_settings(EditSettings(crop=CropRect(1, 0, 3, 4)), 0.5)
+    assert scaled.crop == CropRect(1, 0, 1, 2)
+
+
+def test_scale_settings_min_1px():
+    settings = EditSettings(crop=CropRect(0, 0, 2, 2), width=2, height=1)
+
+    scaled = scale_settings(settings, 0.1)
+
+    assert scaled.crop == CropRect(0, 0, 1, 1)
+    assert (scaled.width, scaled.height) == (1, 1)
+
+
+def test_scale_settings_keeps_empty_crop_empty():
+    settings = EditSettings(crop=CropRect(10, 10, 0, 50))
+    assert scale_settings(settings, 0.5).crop == CropRect(5, 5, 0, 25)
+
+
+def test_scale_settings_without_crop_and_size():
+    assert scale_settings(EditSettings(), 0.5) == EditSettings()
+
+
+@pytest.mark.parametrize("factor", [0, -1])
+def test_scale_settings_invalid_factor(factor):
+    with pytest.raises(ValueError):
+        scale_settings(EditSettings(), factor)
+
+
+def test_scaled_preview_matches_full_size():
+    # 縮小プレビューの出力は、原寸出力をほぼ factor 倍したサイズになる
+    original = make_sample()
+    settings = EditSettings(crop=CropRect(40, 20, 320, 240), width=160)
+    factor = 0.5
+    preview = original.resize((200, 150))
+
+    full = apply_edits(original, settings)
+    scaled = apply_edits(preview, scale_settings(settings, factor))
+
+    assert full.size == (160, 120)
+    assert scaled.size == (80, 60)
+
+
+# --- 設計ルール ---------------------------------------------------------------
+
+
+def test_core_pipeline_does_not_import_qt():
+    code = (
+        "import sys, image_editor.core.pipeline; "
+        "print(any(m.startswith('PyQt6') for m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "False"
