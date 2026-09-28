@@ -4,7 +4,13 @@ import sys
 import pytest
 from PIL import Image, ImageStat
 
-from image_editor.core.effects import aging, vignette
+from image_editor.core.effects import (
+    aging,
+    color_temperature,
+    kelvin_to_rgb,
+    temperature_multipliers,
+    vignette,
+)
 
 GRAY = (200, 200, 200)
 
@@ -170,3 +176,79 @@ def test_aging_does_not_modify_input():
 def test_aging_out_of_range(amount):
     with pytest.raises(ValueError):
         aging(Image.new("RGB", (10, 10)), amount)
+
+
+# --- 色温度 -------------------------------------------------------------------
+
+
+def luma(image: Image.Image) -> float:
+    return ImageStat.Stat(image.convert("L")).mean[0]
+
+
+def test_temperature_neutral_is_unchanged_copy():
+    image = colorful()
+
+    result = color_temperature(image, 6500)
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+def test_low_kelvin_is_warm():
+    r, g, b = ImageStat.Stat(color_temperature(Image.new("RGB", (8, 8), (150,) * 3), 3000)).mean
+    assert r > g > b
+
+
+def test_high_kelvin_is_cool():
+    r, _, b = ImageStat.Stat(color_temperature(Image.new("RGB", (8, 8), (150,) * 3), 10000)).mean
+    assert b > r
+
+
+def test_warmth_is_monotonic():
+    gray = Image.new("RGB", (8, 8), (150,) * 3)
+    warmth = []
+    for kelvin in (2000, 3000, 4500, 6500, 8000, 10000):
+        r, _, b = color_temperature(gray, kelvin).getpixel((0, 0))
+        warmth.append(r - b)
+    assert warmth == sorted(warmth, reverse=True)
+    assert warmth[3] == 0
+
+
+@pytest.mark.parametrize("kelvin", [2000, 3000, 10000])
+def test_temperature_keeps_brightness(kelvin):
+    gray = Image.new("RGB", (8, 8), (128,) * 3)
+    assert abs(luma(color_temperature(gray, kelvin)) - 128) <= 6
+
+
+def test_multipliers_are_neutral_at_6500():
+    assert temperature_multipliers(6500) == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_kelvin_to_rgb_reference_points():
+    red, _, blue = kelvin_to_rgb(2000)
+    assert red == 255 and blue < 50  # 暖色
+    red, _, blue = kelvin_to_rgb(10000)
+    assert blue == 255 and red < 220  # 青み
+
+
+def test_temperature_keeps_alpha():
+    image = colorful().convert("RGBA")
+    image.putalpha(33)
+
+    result = color_temperature(image, 3000)
+
+    assert result.mode == "RGBA"
+    assert result.getchannel("A").getextrema() == (33, 33)
+
+
+def test_temperature_does_not_modify_input():
+    image = colorful()
+    before = image.tobytes()
+    color_temperature(image, 2500)
+    assert image.tobytes() == before
+
+
+@pytest.mark.parametrize("kelvin", [1999, 10001])
+def test_temperature_out_of_range(kelvin):
+    with pytest.raises(ValueError):
+        color_temperature(Image.new("RGB", (10, 10)), kelvin)

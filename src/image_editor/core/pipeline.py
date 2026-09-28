@@ -24,12 +24,14 @@ class EditSettings:
     filter: FilterType = FilterType.NONE
     vignette: int = 0  # 周辺減光の強さ 0〜100（0 = なし）
     aging: int = 0  # 経年劣化の強さ 0〜100（0 = なし）
+    temperature: int = effects.TEMPERATURE_NEUTRAL  # 色温度（ケルビン、6500 = 変化なし）
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング → リサイズ → フィルター → 周辺減光 → 経年劣化 → ポラロイドの白枠。
+    処理順: トリミング → リサイズ → 色温度 → フィルター → 周辺減光 → 経年劣化
+    → ポラロイドの白枠。
     白枠には周辺減光・経年劣化をかけない。
     """
     image = original
@@ -41,6 +43,8 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     if size != image.size:
         image = transform.resize(image, size)
 
+    # 写真アプリのホワイトバランスと同じく、色温度はフィルターの前に整える
+    image = _apply_temperature(image, settings)
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
     image = filters.apply_filter(image, settings.filter, with_border=False)
     if settings.vignette:
@@ -69,7 +73,9 @@ def render_preview(
     - trimmed=True: トリミング範囲だけを切り抜いて表示する（範囲がなければ全体）
     """
     rect = _effective_crop(image.size, scale_settings(settings, factor))
-    rendered = filters.apply_filter(image, settings.filter, with_border=False)
+    rendered = filters.apply_filter(
+        _apply_temperature(image, settings), settings.filter, with_border=False
+    )
     if trimmed and rect is not None:
         rendered = transform.crop(rendered, rect)
         rect = None
@@ -143,6 +149,12 @@ def make_preview(
     # reducing_gap で先に整数倍の縮小をしてから LANCZOS をかけ、大きな画像でも速くする
     preview = original.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
     return preview, factor
+
+
+def _apply_temperature(image: Image.Image, settings: EditSettings) -> Image.Image:
+    if settings.temperature == effects.TEMPERATURE_NEUTRAL:
+        return image
+    return effects.color_temperature(image, settings.temperature)
 
 
 def _effective_crop(size: tuple[int, int], settings: EditSettings) -> CropRect | None:
