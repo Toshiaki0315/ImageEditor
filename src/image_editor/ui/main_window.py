@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from image_editor.core.filters import FilterType
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
@@ -77,9 +76,11 @@ class MainWindow(QMainWindow):
         # 最後に保存したときの設定（未保存の変更の判定に使う）
         self._saved_settings: EditSettings | None = None
         self._load_notes: list[str] = []
-        # プレビュー用の縮小版（長辺 1600px）と、表示中のプレビューに適用したフィルター
+        # プレビュー用の縮小版（長辺 1600px）と原本に対する縮小率
         self._preview: Image.Image | None = None
-        self._rendered_filter: FilterType | None = None
+        self._preview_factor = 1.0
+        # 表示中のプレビューを描いたときの条件（変わったときだけ描き直す）
+        self._rendered_key: tuple[object, ...] | None = None
         # 実行中の保存タスクと、そのときの設定
         self._save_task: SaveTask | None = None
         self._saving_settings: EditSettings | None = None
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self.settings_panel = SettingsPanel()
         self.settings_panel.setMinimumWidth(SETTINGS_PANEL_WIDTH)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
+        self.settings_panel.trim_view_toggled.connect(self._on_trim_view_toggled)
         self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
         self.settings_panel.preview_requested.connect(self.update_preview)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
@@ -172,8 +174,7 @@ class MainWindow(QMainWindow):
             return False
 
         self.loaded = loaded
-        self._preview, _ = make_preview(loaded.image)
-        self._rendered_filter = FilterType.NONE
+        self._preview, self._preview_factor = make_preview(loaded.image)
         self._saved_settings = None
         self._load_notes = list(notes or [])
         if loaded.is_animated:
@@ -184,6 +185,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_image_size(loaded.image.size)
         self._auto_preview_timer.stop()
         self.drop_area.set_image(self._preview)
+        self._rendered_key = self._preview_key(self.settings_panel.settings())
         # macOS のタイトルバーにファイル名と、クリックで場所を示すアイコンを出す
         self.setWindowTitle(f"{path.name} — {WINDOW_TITLE}")
         self.setWindowFilePath(str(path))
@@ -202,21 +204,27 @@ class MainWindow(QMainWindow):
     # --- プレビュー・保存・リセット -----------------------------------------
 
     def update_preview(self) -> None:
-        """縮小版の画像全体にフィルターの色を適用してプレビューに表示する。
+        """縮小版の画像にフィルターの色と周辺減光を適用してプレビューに表示する。
 
-        トリミング範囲はいつでも選べるよう、元の画角のまま表示してマスクで示す。
-        リサイズとポラロイドの白枠は表示に反映せず、出力サイズはステータスバーに出す。
+        通常は元の画角全体を表示してトリミング範囲をマスクで示し（いつでも選び直せる）、
+        「トリミング実行」中は切り抜いた範囲だけを表示する。リサイズとポラロイドの白枠は
+        表示に反映せず、出力サイズはステータスバーに出す。
         """
         self._auto_preview_timer.stop()
         if self.loaded is None or self._preview is None:
             return
         settings = self.settings_panel.settings()
         try:
-            rendered = render_preview(self._preview, settings)
+            rendered = render_preview(
+                self._preview,
+                settings,
+                self._preview_factor,
+                trimmed=self.settings_panel.is_trim_view(),
+            )
         except Exception as e:  # NFR-04
             self._show_error("プレビューを更新できません", f"{type(e).__name__}: {e}")
             return
-        self._rendered_filter = settings.filter
+        self._rendered_key = self._preview_key(settings)
         self.drop_area.set_image(rendered)
 
     def save_file_dialog(self) -> None:
@@ -293,7 +301,7 @@ class MainWindow(QMainWindow):
         self._auto_preview_timer.stop()
         self.loaded = None
         self._preview = None
-        self._rendered_filter = None
+        self._rendered_key = None
         self._saved_settings = None
         self._load_notes = []
         self.drop_area.crop_overlay.set_active(False)
@@ -321,9 +329,23 @@ class MainWindow(QMainWindow):
             overlay.set_crop(settings.crop)
         if not self.is_saving():
             self._update_status()
-        # プレビューに反映されるのはフィルターだけなので、変わったときだけ描き直す
-        if self.loaded is not None and settings.filter is not self._rendered_filter:
+        # 表示に影響する設定が変わったときだけ描き直す
+        if self.loaded is not None and self._preview_key(settings) != self._rendered_key:
             self._auto_preview_timer.start()
+
+    def _preview_key(self, settings: EditSettings) -> tuple[object, ...]:
+        """プレビューの見た目を決める条件。サイズ変更や白枠は表示に反映しないので含めない。"""
+        trimmed = self.settings_panel.is_trim_view()
+        # トリミング範囲は、切り抜き表示中か周辺減光があるときだけ見た目に影響する
+        crop = settings.crop if trimmed or settings.vignette else None
+        return (settings.filter, settings.vignette, crop, trimmed)
+
+    def _on_trim_view_toggled(self, trimmed: bool) -> None:
+        """切り抜き後の表示ではドラッグでの範囲選択を止め、全体表示に戻したら再開する。"""
+        if self.loaded is None:
+            return
+        self.drop_area.crop_overlay.set_active(not trimmed)
+        self.update_preview()
 
     def _auto_preview(self) -> None:
         if self.loaded is not None:

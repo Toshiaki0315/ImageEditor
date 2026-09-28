@@ -116,15 +116,22 @@ def polaroid(image: Image.Image, alpha: Image.Image | None = None) -> Image.Imag
     alpha を渡すと RGBA で返す（白枠部分は不透明）。
     """
     toned = polaroid_tone(image)
+    if alpha is not None:
+        toned.putalpha(alpha)
+    return polaroid_frame(toned)
+
+
+def polaroid_frame(image: Image.Image) -> Image.Image:
+    """RGB / RGBA 画像の周囲にポラロイドの白枠を付けた新しい画像を返す（白枠部分は不透明）。"""
     border, bottom = polaroid_border_sizes(image.size)
     width, height = image.size
     canvas_size = (width + border * 2, height + border + bottom)
 
     framed = Image.new("RGB", canvas_size, POLAROID_BORDER_COLOR)
-    framed.paste(toned, (border, border))
-    if alpha is not None:
+    framed.paste(image.convert("RGB"), (border, border))
+    if image.mode == "RGBA":
         framed_alpha = Image.new("L", canvas_size, 255)
-        framed_alpha.paste(alpha, (border, border))
+        framed_alpha.paste(image.getchannel("A"), (border, border))
         framed.putalpha(framed_alpha)
     return framed
 

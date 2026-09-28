@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
-from image_editor.core import filters, transform
+from image_editor.core import effects, filters, transform
 from image_editor.core.filters import FilterType
 from image_editor.core.transform import CropRect
 
@@ -22,12 +22,14 @@ class EditSettings:
     height: int | None = None
     keep_aspect: bool = True
     filter: FilterType = FilterType.NONE
+    vignette: int = 0  # 周辺減光の強さ 0〜100（0 = なし）
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
-    """原画像に トリミング → リサイズ → フィルター の順で編集を適用した新しい画像を返す。
+    """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    原画像は変更しない。
+    処理順: トリミング → リサイズ → フィルター → 周辺減光 → ポラロイドの白枠。
+    白枠には周辺減光をかけない。
     """
     image = original
     rect = _effective_crop(original.size, settings)
@@ -39,16 +41,43 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
         image = transform.resize(image, size)
 
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
-    return filters.apply_filter(image, settings.filter)
+    image = filters.apply_filter(image, settings.filter, with_border=False)
+    if settings.vignette:
+        image = effects.vignette(image, settings.vignette)
+    if settings.filter is FilterType.POLAROID:
+        image = filters.polaroid_frame(image)
+    return image
 
 
-def render_preview(image: Image.Image, settings: EditSettings) -> Image.Image:
-    """プレビュー表示用に、画像全体へフィルターの色だけを適用した新しい画像を返す。
+def render_preview(
+    image: Image.Image,
+    settings: EditSettings,
+    factor: float = 1.0,
+    trimmed: bool = False,
+) -> Image.Image:
+    """プレビュー表示用の画像を返す（入力画像は変更しない）。
 
-    トリミング範囲の選択をいつでもできるよう、トリミング・リサイズ・ポラロイドの白枠は
-    適用しない（元の画角のまま）。出力サイズは output_size で確認する。
+    image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色と周辺減光を
+    適用し、リサイズとポラロイドの白枠は適用しない（出力サイズは output_size で確認する）。
+
+    - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（なければ全体）を
+      基準にかけ、トリミング範囲はいつでも選び直せる
+    - trimmed=True: トリミング範囲だけを切り抜いて表示する（範囲がなければ全体）
     """
-    return filters.apply_filter(image, settings.filter, with_border=False)
+    rect = _effective_crop(image.size, scale_settings(settings, factor))
+    rendered = filters.apply_filter(image, settings.filter, with_border=False)
+    if trimmed and rect is not None:
+        rendered = transform.crop(rendered, rect)
+        rect = None
+    if settings.vignette:
+        if rect is None:
+            rendered = effects.vignette(rendered, settings.vignette)
+        else:
+            # トリミング範囲の中心を基準に暗くし、元の位置に戻す
+            box = (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)
+            region = effects.vignette(rendered.crop(box), settings.vignette)
+            rendered.paste(region, box[:2])
+    return rendered
 
 
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:

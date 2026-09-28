@@ -686,3 +686,123 @@ def test_window_title_shows_file_name(loaded_window, questions):
     loaded_window.reset()
 
     assert loaded_window.windowTitle() == "Image Editor"
+
+
+# --- 周辺減光・トリミング実行 -----------------------------------------------------
+
+
+def test_vignette_slider_updates_preview(loaded_window, qtbot):
+    corner_before = preview_pixel(loaded_window, 0, 0)
+    center_before = preview_pixel(loaded_window, 200, 150)
+
+    loaded_window.settings_panel.vignette_slider.setValue(100)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 0, 0) != corner_before, timeout=2000)
+    assert sum(preview_pixel(loaded_window, 0, 0)) < sum(corner_before)
+    assert preview_pixel(loaded_window, 200, 150) == center_before
+
+
+def test_vignette_follows_crop_in_preview(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.vignette_slider.setValue(100)
+    loaded_window.update_preview()
+    whole_corner = preview_pixel(loaded_window, 0, 0)
+
+    # 範囲を変えると（周辺減光があるので）描き直され、範囲の中心基準で暗くなる
+    panel.set_crop(CropRect(200, 150, 200, 150))
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 0, 0) != whole_corner, timeout=2000)
+
+    assert preview_pixel(loaded_window, 0, 0) == (220, 60, 30)  # 範囲外は暗くしない
+    assert sum(preview_pixel(loaded_window, 200, 150)) < sum((40, 120, 200))  # 範囲の左上
+
+
+def test_trim_view_shows_cropped_preview(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(100, 50, 200, 100))
+    overlay = loaded_window.drop_area.crop_overlay
+
+    panel.trim_button.click()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (200, 100)
+    assert not overlay.is_active()  # 切り抜き後の表示ではドラッグで選ばない
+    # 左半分は赤（元画像の x < 200）、右半分は青
+    assert preview_pixel(loaded_window, 10, 50) == (220, 60, 30)
+    assert preview_pixel(loaded_window, 190, 50) == (40, 120, 200)
+
+    panel.trim_button.click()  # 範囲を編集
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 300)
+    assert overlay.is_active()
+    assert overlay.crop() == CropRect(100, 50, 200, 100)
+
+
+def test_trim_view_reflects_filter_and_vignette(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(100, 50, 200, 100))
+    panel.trim_button.click()
+
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
+    panel.vignette_slider.setValue(100)
+    qtbot.waitUntil(lambda: len(set(preview_pixel(loaded_window, 100, 50))) == 1, timeout=2000)
+
+    assert loaded_window.drop_area._source.width() == 200
+    center = preview_pixel(loaded_window, 100, 50)
+    corner = preview_pixel(loaded_window, 0, 0)
+    assert corner[0] < center[0]
+
+
+def test_trim_view_follows_crop_edits(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 200, 100))
+    panel.trim_button.click()
+
+    panel.crop_width_spin.setValue(100)
+
+    qtbot.waitUntil(lambda: loaded_window.drop_area._source.width() == 100, timeout=2000)
+
+
+def test_clear_crop_returns_to_whole_view(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 200, 100))
+    panel.trim_button.click()
+
+    panel.clear_crop_button.click()
+
+    assert loaded_window.drop_area._source.width() == 400
+    assert loaded_window.drop_area.crop_overlay.is_active()
+
+
+def test_trim_view_does_not_affect_save(loaded_window, qtbot, tmp_path):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(100, 50, 200, 100))
+    panel.width_spin.setValue(100)
+    panel.trim_button.click()
+    out = tmp_path / "trimmed.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    assert load_image(out).image.size == (100, 50)
+
+
+def test_saved_image_has_vignette(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.vignette_slider.setValue(100)
+    out = tmp_path / "vignette.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image
+    assert saved.getpixel((200, 150)) == (40, 120, 200)
+    assert sum(saved.getpixel((0, 0))) < sum((220, 60, 30)) * 0.4
+
+
+def test_reset_leaves_trim_view(loaded_window, questions):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 200, 100))
+    panel.trim_button.click()
+
+    loaded_window.reset()
+
+    assert not panel.is_trim_view()
+    assert not loaded_window.drop_area.crop_overlay.is_active()
