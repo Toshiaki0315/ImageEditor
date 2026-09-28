@@ -2,25 +2,30 @@
 
 from typing import Literal
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QPushButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from image_editor.core.effects import VIGNETTE_MAX, VIGNETTE_MIN
 from image_editor.core.filters import FilterType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop, fit_size
 
 # 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
 BLANK_TEXT = " "
+TRIM_TEXT = "トリミング実行"
+EDIT_RANGE_TEXT = "範囲を編集"
 
 
 class SettingsPanel(QWidget):
@@ -33,6 +38,7 @@ class SettingsPanel(QWidget):
     preview_requested = pyqtSignal()
     save_requested = pyqtSignal()
     reset_requested = pyqtSignal()
+    trim_view_toggled = pyqtSignal(bool)  # True: 切り抜き後の表示、False: 全体表示
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -58,8 +64,21 @@ class SettingsPanel(QWidget):
         self.filter_combo = QComboBox()
         for filter_type in FilterType:
             self.filter_combo.addItem(filter_type.label, filter_type)
+        self.vignette_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vignette_slider.setRange(VIGNETTE_MIN, VIGNETTE_MAX)
+        self.vignette_slider.setPageStep(10)
+        self.vignette_value_label = QLabel("0")
+        self.vignette_value_label.setMinimumWidth(28)
+        self.vignette_value_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        vignette_row = QHBoxLayout()
+        vignette_row.addWidget(self.vignette_slider)
+        vignette_row.addWidget(self.vignette_value_label)
         filter_box = QGroupBox("加工")
-        QVBoxLayout(filter_box).addWidget(self.filter_combo)
+        filter_form = QFormLayout(filter_box)
+        filter_form.addRow(self.filter_combo)
+        filter_form.addRow("周辺減光", vignette_row)
 
         # トリミング
         self.crop_x_spin = _spin_box(0, MAX_SIZE, " px")
@@ -67,13 +86,19 @@ class SettingsPanel(QWidget):
         self.crop_width_spin = _spin_box(0, MAX_SIZE, " px")
         self.crop_height_spin = _spin_box(0, MAX_SIZE, " px")
         self.clear_crop_button = QPushButton("範囲をクリア")
+        # 押すと切り抜き後の表示に切り替わり、「範囲を編集」になる（範囲は設定として保持）
+        self.trim_button = QPushButton(TRIM_TEXT)
+        self.trim_button.setCheckable(True)
         crop_box = QGroupBox("トリミング")
         crop_form = QFormLayout(crop_box)
         crop_form.addRow("X", self.crop_x_spin)
         crop_form.addRow("Y", self.crop_y_spin)
         crop_form.addRow("幅", self.crop_width_spin)
         crop_form.addRow("高さ", self.crop_height_spin)
-        crop_form.addRow(self.clear_crop_button)
+        crop_buttons = QHBoxLayout()
+        crop_buttons.addWidget(self.clear_crop_button)
+        crop_buttons.addWidget(self.trim_button)
+        crop_form.addRow(crop_buttons)
 
         # ボタン
         self.preview_button = QPushButton("プレビュー更新")
@@ -98,6 +123,8 @@ class SettingsPanel(QWidget):
         for spin in self._crop_spins():
             spin.valueChanged.connect(lambda _: self._on_crop_edited())
         self.clear_crop_button.clicked.connect(self.clear_crop)
+        self.trim_button.toggled.connect(self._on_trim_toggled)
+        self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
         self.preview_button.clicked.connect(self.preview_requested)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
@@ -122,11 +149,14 @@ class SettingsPanel(QWidget):
                 spin.setValue(0)
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
+            self.vignette_slider.setValue(0)
+            self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
             else:
                 self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
+        self._update_trim_button()
         self._emit_changed()
 
     def settings(self) -> EditSettings:
@@ -151,6 +181,7 @@ class SettingsPanel(QWidget):
             height=height,
             keep_aspect=keep_aspect,
             filter=self.filter_combo.currentData(),
+            vignette=self.vignette_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -173,6 +204,16 @@ class SettingsPanel(QWidget):
     def clear_crop(self) -> None:
         """トリミングを解除する。"""
         self.set_crop(None)
+
+    def is_trim_view(self) -> bool:
+        """切り抜き後の表示（「トリミング実行」が押された状態）かを返す。"""
+        return self.trim_button.isChecked()
+
+    def set_trim_view(self, enabled: bool) -> None:
+        """切り抜き後の表示を切り替える（変化すれば trim_view_toggled を発行）。"""
+        if enabled and not self.trim_button.isEnabled():
+            return
+        self.trim_button.setChecked(enabled)
 
     def set_busy(self, busy: bool) -> None:
         """処理中はボタンを無効化する。"""
@@ -197,6 +238,25 @@ class SettingsPanel(QWidget):
         if checked:
             self._sync_aspect()
         self._emit_changed()
+
+    def _on_vignette_changed(self, value: int) -> None:
+        self.vignette_value_label.setText(str(value))
+        self._emit_changed()
+
+    def _on_trim_toggled(self, checked: bool) -> None:
+        self.trim_button.setText(EDIT_RANGE_TEXT if checked else TRIM_TEXT)
+        if not self._updating:
+            self.trim_view_toggled.emit(checked)
+
+    def _update_trim_button(self) -> None:
+        """トリミング範囲があるときだけ「トリミング実行」を押せるようにする。
+
+        範囲がなくなったら全体表示に戻す。
+        """
+        has_crop = self._image_size is not None and self._effective_crop() is not None
+        if not has_crop and self.trim_button.isChecked():
+            self.trim_button.setChecked(False)
+        self.trim_button.setEnabled(has_crop)
 
     def _on_crop_edited(self) -> None:
         if self._updating:
@@ -258,6 +318,7 @@ class SettingsPanel(QWidget):
 
     def _emit_changed(self) -> None:
         if not self._updating:
+            self._update_trim_button()
             self.settings_changed.emit(self.settings())
 
     def _block(self) -> "_Updating":

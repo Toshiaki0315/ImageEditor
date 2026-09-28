@@ -353,3 +353,104 @@ def test_render_preview_does_not_modify_input():
     before = image.tobytes()
     render_preview(image, EditSettings(filter=FilterType.SEPIA))
     assert image.tobytes() == before
+
+
+# --- 周辺減光 -----------------------------------------------------------------
+
+
+def test_vignette_darkens_output_corners():
+    image = Image.new("RGB", (400, 300), (200, 200, 200))
+
+    result = apply_edits(image, EditSettings(vignette=100))
+
+    assert result.getpixel((200, 150)) == (200, 200, 200)
+    assert result.getpixel((0, 0))[0] < 60
+
+
+def test_vignette_is_relative_to_crop():
+    image = Image.new("RGB", (400, 300), (200, 200, 200))
+    settings = EditSettings(crop=CropRect(100, 100, 200, 100), vignette=100)
+
+    result = apply_edits(image, settings)
+
+    # 切り抜いた範囲の中心は明るく、四隅は暗い
+    assert result.size == (200, 100)
+    assert result.getpixel((100, 50))[0] == 200
+    assert result.getpixel((0, 0))[0] < 60
+
+
+def test_vignette_is_not_applied_to_polaroid_border():
+    image = Image.new("RGB", (200, 200), (200, 200, 200))
+    settings = EditSettings(vignette=100, filter=FilterType.POLAROID)
+
+    result = apply_edits(image, settings)
+
+    # 白枠（上・左・右 10px、下 40px）は白のまま、写真部分の四隅は暗い
+    assert result.getpixel((0, 0)) == (255, 255, 255)
+    assert result.getpixel((110, result.height - 5)) == (255, 255, 255)
+    assert result.getpixel((10, 10))[0] < 80
+
+
+def test_polaroid_without_vignette_is_unchanged():
+    image = make_sample()
+    settings = EditSettings(filter=FilterType.POLAROID)
+    expected = filters.apply_filter(image, FilterType.POLAROID)
+    assert apply_edits(image, settings).tobytes() == expected.tobytes()
+
+
+def test_vignette_does_not_change_output_size():
+    settings = EditSettings(width=100, vignette=50, filter=FilterType.POLAROID)
+    assert output_size((400, 300), settings) == apply_edits(make_sample(), settings).size
+
+
+def test_scale_settings_keeps_vignette():
+    assert scale_settings(EditSettings(vignette=40), 0.5).vignette == 40
+
+
+# --- render_preview（周辺減光・切り抜き表示） ---------------------------------------
+
+
+def test_render_preview_vignette_relative_to_crop():
+    image = Image.new("RGB", (400, 300), (200, 200, 200))
+    settings = EditSettings(crop=CropRect(200, 100, 200, 100), vignette=100)
+
+    result = render_preview(image, settings)
+
+    assert result.size == (400, 300)  # 全体表示のまま
+    assert result.getpixel((300, 150))[0] == 200  # 範囲の中心
+    assert result.getpixel((200, 100))[0] < 60  # 範囲の左上
+    assert result.getpixel((50, 250))[0] == 200  # 範囲外は暗くしない（マスクで表示）
+
+
+def test_render_preview_uses_scaled_crop():
+    # 縮小率 0.5 のプレビューでは、原画像座標の範囲を半分に換算して扱う
+    image = Image.new("RGB", (200, 150), (200, 200, 200))
+    settings = EditSettings(crop=CropRect(200, 100, 200, 100), vignette=100)
+
+    result = render_preview(image, settings, factor=0.5)
+
+    assert result.getpixel((150, 75))[0] == 200
+    assert result.getpixel((100, 50))[0] < 60
+
+
+def test_render_preview_trimmed():
+    image = make_sample()
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), width=50, filter=FilterType.SEPIA)
+
+    result = render_preview(image, settings, trimmed=True)
+
+    # 切り抜いた範囲だけ（リサイズはしない）
+    assert result.size == (200, 100)
+    r, g, b = result.getpixel((100, 50))
+    assert r >= g >= b
+
+
+def test_render_preview_trimmed_with_scaled_crop():
+    image = Image.new("RGB", (200, 150))
+    settings = EditSettings(crop=CropRect(100, 50, 200, 100))
+    assert render_preview(image, settings, factor=0.5, trimmed=True).size == (100, 50)
+
+
+def test_render_preview_trimmed_without_crop_shows_whole():
+    image = make_sample()
+    assert render_preview(image, EditSettings(), trimmed=True).size == image.size

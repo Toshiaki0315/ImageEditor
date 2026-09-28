@@ -236,3 +236,93 @@ def test_fields_are_blank_again_after_reset(panel):
 
     assert [spin.text().strip() for spin in all_spins(panel)] == [""] * 6
     assert panel.settings() == EditSettings()
+
+
+# --- 周辺減光 -----------------------------------------------------------------
+
+
+def test_vignette_slider(panel, qtbot):
+    assert panel.vignette_slider.value() == 0
+    assert (panel.vignette_slider.minimum(), panel.vignette_slider.maximum()) == (0, 100)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.vignette_slider.setValue(40)
+
+    assert blocker.args[0].vignette == 40
+    assert panel.vignette_value_label.text() == "40"
+    assert panel.settings() == EditSettings(vignette=40)
+
+
+def test_vignette_is_reset_on_new_image(panel):
+    panel.vignette_slider.setValue(70)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.vignette_slider.value() == 0
+    assert panel.vignette_value_label.text() == "0"
+
+
+# --- トリミング実行 -------------------------------------------------------------
+
+
+def test_trim_button_needs_crop(panel):
+    assert not panel.trim_button.isEnabled()
+
+    panel.set_crop(CropRect(10, 10, 100, 100))
+
+    assert panel.trim_button.isEnabled()
+    assert panel.trim_button.text() == "トリミング実行"
+
+
+def test_trim_button_toggles_view(panel, qtbot):
+    panel.set_crop(CropRect(10, 10, 100, 100))
+
+    with qtbot.waitSignal(panel.trim_view_toggled) as blocker:
+        panel.trim_button.click()
+
+    assert blocker.args == [True]
+    assert panel.is_trim_view()
+    assert panel.trim_button.text() == "範囲を編集"
+
+    with qtbot.waitSignal(panel.trim_view_toggled) as blocker:
+        panel.trim_button.click()
+
+    assert blocker.args == [False]
+    assert panel.trim_button.text() == "トリミング実行"
+
+
+def test_clearing_crop_leaves_trim_view(panel, qtbot):
+    panel.set_crop(CropRect(10, 10, 100, 100))
+    panel.set_trim_view(True)
+
+    with qtbot.waitSignal(panel.trim_view_toggled) as blocker:
+        panel.clear_crop_button.click()
+
+    assert blocker.args == [False]
+    assert not panel.is_trim_view()
+    assert not panel.trim_button.isEnabled()
+
+
+def test_new_image_leaves_trim_view_without_signal(panel, qtbot):
+    panel.set_crop(CropRect(10, 10, 100, 100))
+    panel.set_trim_view(True)
+
+    with qtbot.assertNotEmitted(panel.trim_view_toggled):
+        panel.set_image_size((200, 200))
+
+    assert not panel.is_trim_view()
+    assert panel.trim_button.text() == "トリミング実行"
+
+
+def test_trim_view_does_not_change_settings(panel):
+    panel.set_crop(CropRect(10, 10, 100, 100))
+    before = panel.settings()
+
+    panel.set_trim_view(True)
+
+    assert panel.settings() == before
+
+
+def test_set_trim_view_ignored_without_crop(panel):
+    panel.set_trim_view(True)
+    assert not panel.is_trim_view()
