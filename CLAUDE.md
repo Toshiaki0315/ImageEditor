@@ -71,7 +71,8 @@ tests/
 4. コミットは Conventional Commits、本文は日本語で可:
    `feat(filters): セピアフィルターを追加 (#5)`
 5. `git push -u origin HEAD` → `gh pr create --fill` し、PR 本文に `Closes #<番号>` と確認手順を書く
-6. **マージはユーザーが行う。** Claude は `main` へ直接 push しない、`git push --force` しない、PR をマージしない。
+6. **マージはユーザーの指示があるときだけ行う。** ユーザーの指示があれば、CI が緑であることを確認して Claude が `gh pr merge --squash --delete-branch` で squash マージしてよい。指示がなければマージしない。
+   Claude は `main` へ直接 push しない、`git push --force` しない。
 
 ## 完了の定義 (Definition of Done)
 
