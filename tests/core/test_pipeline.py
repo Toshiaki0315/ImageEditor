@@ -2,7 +2,7 @@ import subprocess
 import sys
 
 import pytest
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
 
 from image_editor.core import filters, pipeline, transform
 from image_editor.core.filters import FilterType
@@ -319,6 +319,9 @@ def test_preview_looks_like_full_result(filter_type):
     full = apply_edits(original, settings).resize(small.size, Image.Resampling.LANCZOS)
 
     assert abs(small.width - full.width) <= 1 and abs(small.height - full.height) <= 1
+    if filter_type is FilterType.RETRO_CAMERA:
+        # 粒子の模様は解像度ごとに異なるので、ぼかして色の傾向だけを比べる
+        small, full = (im.filter(ImageFilter.GaussianBlur(3)) for im in (small, full))
     diff = ImageChops.difference(small, full)
     mean = sum(ImageStat.Stat(diff).mean) / 3
     assert mean < 3
