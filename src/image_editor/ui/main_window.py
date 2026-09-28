@@ -183,6 +183,9 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_image_size(loaded.image.size)
         self._auto_preview_timer.stop()
         self.drop_area.set_image(self._preview)
+        # macOS のタイトルバーにファイル名と、クリックで場所を示すアイコンを出す
+        self.setWindowTitle(f"{path.name} — {WINDOW_TITLE}")
+        self.setWindowFilePath(str(path))
         self._update_status()
         self._update_actions()
         return True
@@ -296,6 +299,8 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.set_active(False)
         self.drop_area.crop_overlay.set_image_size(None)
         self.drop_area.set_image(None)
+        self.setWindowTitle(WINDOW_TITLE)
+        self.setWindowFilePath("")
         self.settings_panel.set_image_size(None)
         self._update_status()
         self._update_actions()
