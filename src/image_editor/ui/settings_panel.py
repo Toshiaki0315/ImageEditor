@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from image_editor.core.effects import VIGNETTE_MAX, VIGNETTE_MIN
+from image_editor.core.effects import AGING_MAX, AGING_MIN, VIGNETTE_MAX, VIGNETTE_MIN
 from image_editor.core.filters import FilterType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop, fit_size
@@ -63,21 +63,15 @@ class SettingsPanel(QWidget):
         self.filter_combo = QComboBox()
         for filter_type in FilterType:
             self.filter_combo.addItem(filter_type.label, filter_type)
-        self.vignette_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vignette_slider.setRange(VIGNETTE_MIN, VIGNETTE_MAX)
-        self.vignette_slider.setPageStep(10)
-        self.vignette_value_label = QLabel("0")
-        self.vignette_value_label.setMinimumWidth(28)
-        self.vignette_value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        self.vignette_slider, self.vignette_value_label, vignette_row = _amount_slider(
+            VIGNETTE_MIN, VIGNETTE_MAX
         )
-        vignette_row = QHBoxLayout()
-        vignette_row.addWidget(self.vignette_slider)
-        vignette_row.addWidget(self.vignette_value_label)
+        self.aging_slider, self.aging_value_label, aging_row = _amount_slider(AGING_MIN, AGING_MAX)
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
         filter_form.addRow("周辺減光", vignette_row)
+        filter_form.addRow("経年劣化", aging_row)
 
         # トリミング
         self.crop_x_spin = _spin_box(0, MAX_SIZE, " px")
@@ -122,6 +116,7 @@ class SettingsPanel(QWidget):
         self.clear_crop_button.clicked.connect(self.clear_crop)
         self.trim_button.toggled.connect(self._on_trim_toggled)
         self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
+        self.aging_slider.valueChanged.connect(self._on_aging_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -146,6 +141,7 @@ class SettingsPanel(QWidget):
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
             self.vignette_slider.setValue(0)
+            self.aging_slider.setValue(0)
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -178,6 +174,7 @@ class SettingsPanel(QWidget):
             keep_aspect=keep_aspect,
             filter=self.filter_combo.currentData(),
             vignette=self.vignette_slider.value(),
+            aging=self.aging_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -237,6 +234,10 @@ class SettingsPanel(QWidget):
 
     def _on_vignette_changed(self, value: int) -> None:
         self.vignette_value_label.setText(str(value))
+        self._emit_changed()
+
+    def _on_aging_changed(self, value: int) -> None:
+        self.aging_value_label.setText(str(value))
         self._emit_changed()
 
     def _on_trim_toggled(self, checked: bool) -> None:
@@ -334,6 +335,20 @@ class _Updating:
 
     def __exit__(self, *exc: object) -> None:
         self._panel._updating = self._previous
+
+
+def _amount_slider(minimum: int, maximum: int) -> tuple[QSlider, QLabel, QHBoxLayout]:
+    """強さを指定するスライダーと、現在値を表示するラベルを横に並べて返す。"""
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setRange(minimum, maximum)
+    slider.setPageStep(10)
+    label = QLabel(str(minimum))
+    label.setMinimumWidth(28)
+    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    row = QHBoxLayout()
+    row.addWidget(slider)
+    row.addWidget(label)
+    return slider, label, row
 
 
 def _spin_box(minimum: int, maximum: int, suffix: str) -> QSpinBox:

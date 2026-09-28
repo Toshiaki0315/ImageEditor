@@ -2,9 +2,9 @@ import subprocess
 import sys
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageStat
 
-from image_editor.core.effects import vignette
+from image_editor.core.effects import aging, vignette
 
 GRAY = (200, 200, 200)
 
@@ -78,3 +78,95 @@ def test_core_effects_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+# --- 経年劣化 -----------------------------------------------------------------
+
+
+def colorful() -> Image.Image:
+    """4 色の帯と黒・白を持つ 240x80 画像。"""
+    image = Image.new("RGB", (240, 80))
+    colors = [(220, 40, 40), (40, 180, 60), (40, 60, 220), (240, 200, 40), (0, 0, 0), (255,) * 3]
+    for i, color in enumerate(colors):
+        image.paste(color, (i * 40, 0, (i + 1) * 40, 80))
+    return image
+
+
+def band_mean(image: Image.Image, index: int) -> list[float]:
+    return ImageStat.Stat(image.crop((index * 40, 0, (index + 1) * 40, 80))).mean
+
+
+def saturation(image: Image.Image) -> float:
+    """色の帯（左 4 本）の平均彩度。黒・白の帯は黄ばみで彩度が出るので含めない。"""
+    return ImageStat.Stat(image.crop((0, 0, 160, 80)).convert("HSV")).mean[1]
+
+
+def test_aging_zero_is_unchanged_copy():
+    image = colorful()
+
+    result = aging(image, 0)
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+def test_aging_reduces_saturation_as_amount_grows():
+    image = colorful()
+    values = [saturation(aging(image, amount)) for amount in (0, 25, 50, 75, 100)]
+    assert values == sorted(values, reverse=True)
+    assert values[-1] < values[0] * 0.6
+
+
+def test_aging_fades_blacks_and_whites():
+    black = [band_mean(aging(colorful(), a), 4)[1] for a in (0, 50, 100)]
+    white = [band_mean(aging(colorful(), a), 5)[1] for a in (0, 50, 100)]
+
+    assert black[0] < black[1] < black[2]  # 黒が浮く
+    assert black[2] > 30
+    assert white[0] > white[1] > white[2]  # 白が抑えられる
+    assert white[2] < 240
+
+
+def test_aging_turns_yellowish():
+    gray = Image.new("RGB", (64, 64), (160, 160, 160))
+
+    r, g, b = ImageStat.Stat(aging(gray, 100)).mean
+
+    assert r > g > b
+    assert r - b > 40
+
+
+def test_aging_grain_grows_with_amount():
+    gray = Image.new("RGB", (128, 128), (128, 128, 128))
+    stddev = [ImageStat.Stat(aging(gray, a)).stddev[1] for a in (0, 30, 100)]
+    assert stddev[0] == 0
+    assert 0 < stddev[1] < stddev[2]
+
+
+def test_aging_is_deterministic():
+    image = colorful()
+    assert aging(image, 70).tobytes() == aging(image, 70).tobytes()
+
+
+def test_aging_keeps_alpha_and_size():
+    image = colorful().convert("RGBA")
+    image.putalpha(90)
+
+    result = aging(image, 80)
+
+    assert result.mode == "RGBA"
+    assert result.size == image.size
+    assert result.getchannel("A").getextrema() == (90, 90)
+
+
+def test_aging_does_not_modify_input():
+    image = colorful()
+    before = image.tobytes()
+    aging(image, 100)
+    assert image.tobytes() == before
+
+
+@pytest.mark.parametrize("amount", [-1, 101])
+def test_aging_out_of_range(amount):
+    with pytest.raises(ValueError):
+        aging(Image.new("RGB", (10, 10)), amount)

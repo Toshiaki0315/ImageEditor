@@ -810,3 +810,26 @@ def test_reset_leaves_trim_view(loaded_window, questions):
 
     assert not panel.is_trim_view()
     assert not loaded_window.drop_area.crop_overlay.is_active()
+
+
+# --- 経年劣化 -----------------------------------------------------------------
+
+
+def test_aging_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.aging_slider.setValue(100)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    r, _, b = preview_pixel(loaded_window, 300, 150)
+    assert b - r < before[2] - before[0]  # 青が抜けて黄ばむ
+
+
+def test_saved_image_has_aging(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.aging_slider.setValue(100)
+    out = tmp_path / "aged.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    r, _, b = load_image(out).image.getpixel((300, 150))
+    assert b - r < 200 - 40

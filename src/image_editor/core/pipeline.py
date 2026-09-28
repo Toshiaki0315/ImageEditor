@@ -23,13 +23,14 @@ class EditSettings:
     keep_aspect: bool = True
     filter: FilterType = FilterType.NONE
     vignette: int = 0  # 周辺減光の強さ 0〜100（0 = なし）
+    aging: int = 0  # 経年劣化の強さ 0〜100（0 = なし）
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング → リサイズ → フィルター → 周辺減光 → ポラロイドの白枠。
-    白枠には周辺減光をかけない。
+    処理順: トリミング → リサイズ → フィルター → 周辺減光 → 経年劣化 → ポラロイドの白枠。
+    白枠には周辺減光・経年劣化をかけない。
     """
     image = original
     rect = _effective_crop(original.size, settings)
@@ -44,6 +45,8 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     image = filters.apply_filter(image, settings.filter, with_border=False)
     if settings.vignette:
         image = effects.vignette(image, settings.vignette)
+    if settings.aging:
+        image = effects.aging(image, settings.aging)
     if settings.filter is FilterType.POLAROID:
         image = filters.polaroid_frame(image)
     return image
@@ -57,8 +60,9 @@ def render_preview(
 ) -> Image.Image:
     """プレビュー表示用の画像を返す（入力画像は変更しない）。
 
-    image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色と周辺減光を
-    適用し、リサイズとポラロイドの白枠は適用しない（出力サイズは output_size で確認する）。
+    image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色・周辺減光・
+    経年劣化を適用し、リサイズとポラロイドの白枠は適用しない（出力サイズは output_size で
+    確認する）。
 
     - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（なければ全体）を
       基準にかけ、トリミング範囲はいつでも選び直せる
@@ -77,6 +81,9 @@ def render_preview(
             box = (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)
             region = effects.vignette(rendered.crop(box), settings.vignette)
             rendered.paste(region, box[:2])
+    if settings.aging:
+        # 経年劣化は画素ごとの色の変化と固定模様の粒子なので、表示範囲全体にかける
+        rendered = effects.aging(rendered, settings.aging)
     return rendered
 
 

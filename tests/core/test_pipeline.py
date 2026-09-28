@@ -454,3 +454,51 @@ def test_render_preview_trimmed_with_scaled_crop():
 def test_render_preview_trimmed_without_crop_shows_whole():
     image = make_sample()
     assert render_preview(image, EditSettings(), trimmed=True).size == image.size
+
+
+# --- 経年劣化 -----------------------------------------------------------------
+
+
+def test_aging_is_applied():
+    image = Image.new("RGB", (100, 100), (160, 160, 160))
+
+    r, _, b = ImageStat.Stat(apply_edits(image, EditSettings(aging=100))).mean
+
+    assert r - b > 40
+
+
+def test_aging_is_not_applied_to_polaroid_border():
+    image = Image.new("RGB", (200, 200), (160, 160, 160))
+    settings = EditSettings(aging=100, filter=FilterType.POLAROID)
+
+    result = apply_edits(image, settings)
+
+    # 白枠（上・左・右 10px、下 40px）は白のまま、写真部分は黄ばむ
+    assert result.getpixel((0, 0)) == (255, 255, 255)
+    assert result.getpixel((110, result.height - 5)) == (255, 255, 255)
+    r, _, b = result.getpixel((110, 110))
+    assert r > b
+
+
+def test_aging_after_vignette():
+    # 周辺減光で暗くなった四隅も、経年劣化のフェードで黒が浮く
+    image = Image.new("RGB", (200, 200), (0, 0, 0))
+    result = apply_edits(image, EditSettings(vignette=100, aging=100))
+    assert ImageStat.Stat(result.crop((0, 0, 20, 20))).mean[1] > 30
+
+
+def test_aging_does_not_change_output_size():
+    settings = EditSettings(width=100, aging=80, filter=FilterType.POLAROID)
+    assert output_size((400, 300), settings) == apply_edits(make_sample(), settings).size
+
+
+def test_render_preview_applies_aging():
+    image = Image.new("RGB", (400, 300), (160, 160, 160))
+    settings = EditSettings(crop=CropRect(100, 100, 100, 100), aging=100)
+
+    result = render_preview(image, settings)
+
+    assert result.size == (400, 300)
+    # 経年劣化はトリミング範囲の外（マスク表示の部分）にもかける
+    r, _, b = result.getpixel((10, 10))
+    assert r - b > 40
