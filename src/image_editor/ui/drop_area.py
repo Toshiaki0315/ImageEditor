@@ -15,10 +15,12 @@ from PyQt6.QtGui import (
     QPaintEvent,
     QPen,
     QPixmap,
+    QResizeEvent,
 )
 from PyQt6.QtWidgets import QWidget
 
 from image_editor.core.io import is_supported
+from image_editor.ui.crop_overlay import CropOverlay
 from image_editor.ui.qt_image import pil_to_qimage
 
 PLACEHOLDER_TEXT = "ここに画像をドロップしてください"
@@ -42,6 +44,8 @@ class DropArea(QWidget):
         self._source: QImage | None = None
         self._cache: QPixmap | None = None
         self._highlighted = False
+        # トリミング範囲の選択（既定は無効）
+        self.crop_overlay = CropOverlay(self.image_rect, self)
 
     # --- 画像 ---------------------------------------------------------------
 
@@ -96,6 +100,10 @@ class DropArea(QWidget):
             self._cache = QPixmap.fromImage(scaled)
             self._cache.setDevicePixelRatio(ratio)
         return self._cache
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self.crop_overlay.setGeometry(self.rect())
 
     # --- 描画 ---------------------------------------------------------------
 

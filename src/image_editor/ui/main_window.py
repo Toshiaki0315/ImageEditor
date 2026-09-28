@@ -71,7 +71,9 @@ class MainWindow(QMainWindow):
         self.drop_area.files_dropped.connect(self._on_files_dropped)
         self.settings_panel = SettingsPanel()
         self.settings_panel.setMinimumWidth(SETTINGS_PANEL_WIDTH)
-        self.settings_panel.settings_changed.connect(lambda _: self._update_status())
+        self.settings_panel.settings_changed.connect(self._on_settings_changed)
+        self.settings_panel.crop_mode_toggled.connect(self._set_crop_mode)
+        self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
         self.settings_panel.preview_requested.connect(self.update_preview)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
         self.settings_panel.reset_requested.connect(self.reset)
@@ -153,6 +155,8 @@ class MainWindow(QMainWindow):
         self._load_notes = list(notes or [])
         if loaded.is_animated:
             self._load_notes.append("複数フレームの画像のため、先頭フレームのみ扱います")
+        self.drop_area.crop_overlay.set_active(False)
+        self.drop_area.crop_overlay.set_image_size(loaded.image.size)
         self.settings_panel.set_image_size(loaded.image.size)
         self.drop_area.set_image(loaded.image)
         self._update_status()
@@ -170,8 +174,15 @@ class MainWindow(QMainWindow):
     # --- プレビュー・保存・リセット -----------------------------------------
 
     def update_preview(self) -> None:
-        """現在の設定を原本に適用してプレビューに表示する。"""
+        """現在の設定を原本に適用してプレビューに表示する。
+
+        範囲指定中なら、範囲指定を終えて編集結果の表示に切り替える。
+        """
         if self.loaded is None:
+            return
+        if self.settings_panel.is_crop_mode():
+            # OFF にすると _set_crop_mode(False) からこのメソッドが再び呼ばれる
+            self.settings_panel.set_crop_mode(False)
             return
         try:
             edited = apply_edits(self.loaded.image, self.settings_panel.settings())
@@ -234,6 +245,8 @@ class MainWindow(QMainWindow):
         self.loaded = None
         self._saved_settings = None
         self._load_notes = []
+        self.drop_area.crop_overlay.set_active(False)
+        self.drop_area.crop_overlay.set_image_size(None)
         self.drop_area.set_image(None)
         self.settings_panel.set_image_size(None)
         self._update_status()
@@ -247,6 +260,26 @@ class MainWindow(QMainWindow):
         return settings != EditSettings() and settings != self._saved_settings
 
     # --- 内部 -----------------------------------------------------------------
+
+    def _on_settings_changed(self, settings: EditSettings) -> None:
+        overlay = self.drop_area.crop_overlay
+        # ドラッグ中の変更はオーバーレイ自身が発生源なので書き戻さない
+        if not overlay.is_dragging():
+            overlay.set_crop(settings.crop)
+        self._update_status()
+
+    def _set_crop_mode(self, enabled: bool) -> None:
+        """ON なら原画像全体と選択範囲を表示してドラッグ可能にし、OFF なら編集結果を表示する。"""
+        if self.loaded is None:
+            return
+        overlay = self.drop_area.crop_overlay
+        if enabled:
+            self.drop_area.set_image(self.loaded.image)
+            overlay.set_crop(self.settings_panel.settings().crop)
+            overlay.set_active(True)
+        else:
+            overlay.set_active(False)
+            self.update_preview()
 
     def _confirm_discard(self) -> bool:
         if not self.has_unsaved_changes():
