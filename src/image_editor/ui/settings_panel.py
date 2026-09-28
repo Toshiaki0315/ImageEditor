@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
 from image_editor.core.effects import (
     AGING_MAX,
     AGING_MIN,
+    BRIGHTNESS_MAX,
+    BRIGHTNESS_MIN,
     SATURATION_MAX,
     SATURATION_MIN,
     TEMPERATURE_MAX,
@@ -37,6 +39,8 @@ from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop
 BLANK_TEXT = " "
 TRIM_TEXT = "トリミング実行"
 EDIT_RANGE_TEXT = "範囲を編集"
+# 「加工」のスライダーの最小の長さ（細かく調整しやすいよう長めにする）
+SLIDER_MIN_WIDTH = 225
 
 
 class SettingsPanel(QWidget):
@@ -90,9 +94,15 @@ class SettingsPanel(QWidget):
         )
         self.saturation_slider.setValue(0)
         self.saturation_value_label.setText(_signed_text(0))
+        self.brightness_slider, self.brightness_value_label, brightness_row = _amount_slider(
+            BRIGHTNESS_MIN, BRIGHTNESS_MAX
+        )
+        self.brightness_slider.setValue(0)
+        self.brightness_value_label.setText(_signed_text(0))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
+        filter_form.addRow("明るさ", brightness_row)
         filter_form.addRow("色温度", temperature_row)
         filter_form.addRow("彩度", saturation_row)
         filter_form.addRow("周辺減光", vignette_row)
@@ -144,6 +154,7 @@ class SettingsPanel(QWidget):
         self.aging_slider.valueChanged.connect(self._on_aging_changed)
         self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
         self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
+        self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -171,6 +182,7 @@ class SettingsPanel(QWidget):
             self.aging_slider.setValue(0)
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
             self.saturation_slider.setValue(0)
+            self.brightness_slider.setValue(0)
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -206,6 +218,7 @@ class SettingsPanel(QWidget):
             aging=self.aging_slider.value(),
             temperature=self.temperature_kelvin(),
             saturation=self.saturation_slider.value(),
+            brightness=self.brightness_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -281,6 +294,10 @@ class SettingsPanel(QWidget):
 
     def _on_saturation_changed(self, value: int) -> None:
         self.saturation_value_label.setText(_signed_text(value))
+        self._emit_changed()
+
+    def _on_brightness_changed(self, value: int) -> None:
+        self.brightness_value_label.setText(_signed_text(value))
         self._emit_changed()
 
     def _on_trim_toggled(self, checked: bool) -> None:
@@ -394,6 +411,7 @@ def _amount_slider(minimum: int, maximum: int) -> tuple[QSlider, QLabel, QHBoxLa
     slider = QSlider(Qt.Orientation.Horizontal)
     slider.setRange(minimum, maximum)
     slider.setPageStep(10)
+    slider.setMinimumWidth(SLIDER_MIN_WIDTH)
     label = QLabel(str(minimum))
     label.setMinimumWidth(64)  # 「10000 K」が入る幅で、各スライダーの長さをそろえる
     label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)

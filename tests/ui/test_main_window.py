@@ -879,3 +879,34 @@ def test_saved_image_has_saturation(loaded_window, qtbot, tmp_path):
 
     r, g, b = load_image(out).image.getpixel((100, 150))
     assert max(r, g, b) - min(r, g, b) <= 1
+
+
+# --- 明るさ・スライダーの長さ ---------------------------------------------------
+
+
+def test_brightness_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.brightness_slider.setValue(60)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    assert sum(preview_pixel(loaded_window, 300, 150)) > sum(before)
+
+
+def test_saved_image_has_brightness(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.brightness_slider.setValue(-60)
+    out = tmp_path / "dark.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    assert sum(load_image(out).image.getpixel((300, 150))) < 40 + 120 + 200
+
+
+@pytest.mark.parametrize("size", [(1200, 800), (900, 600)])
+def test_sliders_fit_in_window(window, qtbot, size):
+    # 初期サイズ・最小サイズのどちらでも、スライダーが 225px 以上で表示され、プレビューも残る
+    window.resize(*size)
+    qtbot.wait(50)
+
+    assert window.settings_panel.brightness_slider.width() >= 225
+    assert window.drop_area.width() >= 400

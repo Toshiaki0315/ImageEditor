@@ -34,7 +34,7 @@ from image_editor.ui.worker import SaveTask
 WINDOW_TITLE = "Image Editor"
 INITIAL_SIZE = (1200, 800)
 MINIMUM_SIZE = (900, 600)
-SETTINGS_PANEL_WIDTH = 320
+SETTINGS_PANEL_WIDTH = 400  # 「加工」のスライダー (225px) と数値表示が収まる幅
 
 NO_IMAGE_MESSAGE = "画像が読み込まれていません"
 FORMATS_TEXT = "PNG / JPEG / GIF / TIFF / BMP"
@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
             settings.filter,
             settings.temperature,
             settings.saturation,
+            settings.brightness,
             settings.vignette,
             settings.aging,
             crop,
