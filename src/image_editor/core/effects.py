@@ -1,4 +1,4 @@
-"""フィルターの前後にかける効果（色温度・彩度・周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（明るさ・色温度・彩度・周辺減光・経年劣化）。"""
 
 from __future__ import annotations
 
@@ -40,6 +40,11 @@ _LUMA = (0.299, 0.587, 0.114)
 # 彩度（-100 = 白黒、0 = 変化なし、+100 = 鮮やかさ 2 倍）
 SATURATION_MIN = -100
 SATURATION_MAX = 100
+
+# 明るさ（-100〜+100、0 = 変化なし）。中間の明るさをガンマで持ち上げ・押し下げ、黒と白は保つ
+BRIGHTNESS_MIN = -100
+BRIGHTNESS_MAX = 100
+BRIGHTNESS_GAMMA_BASE = 2.0  # ガンマ = BASE ** (-値 / 50)。+100 で 0.25、-100 で 4
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -178,6 +183,26 @@ def saturation(image: Image.Image, amount: int) -> Image.Image:
 
     alpha = image.getchannel("A") if image.mode == "RGBA" else None
     rgb = ImageEnhance.Color(image.convert("RGB")).enhance(1 + amount / SATURATION_MAX)
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
+
+
+def brightness(image: Image.Image, amount: int) -> Image.Image:
+    """明るさを変えた新しい画像を返す（入力画像は変更しない）。
+
+    amount は -100〜+100（0 は変化なし）。プラスで明るく、マイナスで暗くする。中間の明るさを
+    トーンカーブ（ガンマ）で動かすので、黒 (0) と白 (255) は変わらず、白飛び・黒つぶれしにくい。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("明るさ", amount, BRIGHTNESS_MIN, BRIGHTNESS_MAX)
+    if amount == 0:
+        return image.copy()
+
+    gamma = BRIGHTNESS_GAMMA_BASE ** (-amount / 50)
+    curve = _clip_table([255 * (v / 255) ** gamma for v in range(256)])
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    rgb = image.convert("RGB").point(curve * 3)
     if alpha is not None:
         rgb.putalpha(alpha)
     return rgb

@@ -408,3 +408,49 @@ def test_saturation_is_reset_on_new_image(panel):
 
     assert panel.saturation_slider.value() == 0
     assert panel.saturation_value_label.text() == "0"
+
+
+# --- 明るさ -------------------------------------------------------------------
+
+
+def test_brightness_slider(panel, qtbot):
+    assert panel.brightness_slider.value() == 0
+    assert panel.brightness_value_label.text() == "0"
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.brightness_slider.setValue(25)
+
+    assert blocker.args[0].brightness == 25
+    assert panel.brightness_value_label.text() == "+25"
+    assert panel.settings() == EditSettings(brightness=25)
+
+
+def test_brightness_is_reset_on_new_image(panel):
+    panel.brightness_slider.setValue(-30)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.brightness_slider.value() == 0
+    assert panel.brightness_value_label.text() == "0"
+
+
+# --- スライダーの長さ ---------------------------------------------------------
+
+
+def test_sliders_are_long_enough_and_aligned(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    widget.set_image_size((100, 100))
+    widget.show()
+    qtbot.waitExposed(widget)
+
+    sliders = [
+        widget.brightness_slider,
+        widget.temperature_slider,
+        widget.saturation_slider,
+        widget.vignette_slider,
+        widget.aging_slider,
+    ]
+    widths = {slider.width() for slider in sliders}
+    assert len(widths) == 1  # 長さがそろっている
+    assert widths.pop() >= 225  # 以前 (150px) の 1.5 倍以上

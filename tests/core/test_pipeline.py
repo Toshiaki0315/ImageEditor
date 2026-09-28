@@ -573,3 +573,31 @@ def test_render_preview_applies_saturation():
     image = Image.new("RGB", (40, 30), (200, 100, 50))
     r, g, b = render_preview(image, EditSettings(saturation=-100)).getpixel((0, 0))
     assert max(r, g, b) - min(r, g, b) <= 1
+
+
+# --- 明るさ -------------------------------------------------------------------
+
+
+def test_default_brightness_is_zero():
+    assert EditSettings().brightness == 0
+
+
+def test_brightness_is_applied():
+    image = Image.new("RGB", (20, 20), (128, 128, 128))
+    assert apply_edits(image, EditSettings(brightness=50)).getpixel((0, 0))[0] > 150
+    assert apply_edits(image, EditSettings(brightness=-50)).getpixel((0, 0))[0] < 100
+
+
+def test_brightness_is_applied_before_filter():
+    # 明るくしてからモノトーンにしても、白黒のまま明るくなる（フィルターの前にかかる）
+    image = Image.new("RGB", (20, 20), (128, 128, 128))
+    settings = EditSettings(brightness=50, filter=FilterType.MONOTONE)
+
+    r, g, b = apply_edits(image, settings).getpixel((0, 0))
+
+    assert r == g == b > 150
+
+
+def test_render_preview_applies_brightness():
+    image = Image.new("RGB", (40, 30), (128, 128, 128))
+    assert render_preview(image, EditSettings(brightness=100)).getpixel((0, 0))[0] > 200
