@@ -10,6 +10,8 @@ from image_editor.core import filters, transform
 from image_editor.core.filters import FilterType
 from image_editor.core.transform import CropRect
 
+PREVIEW_MAX_SIDE = 1600
+
 
 @dataclass(frozen=True)
 class EditSettings:
@@ -75,6 +77,27 @@ def scale_settings(settings: EditSettings, factor: float) -> EditSettings:
         width=_scale_length(settings.width, factor),
         height=_scale_length(settings.height, factor),
     )
+
+
+def make_preview(
+    original: Image.Image, max_side: int = PREVIEW_MAX_SIDE
+) -> tuple[Image.Image, float]:
+    """プレビュー用に長辺 max_side 以下へ縮小した画像と、その縮小率を返す。
+
+    元から小さい画像は縮小せず、縮小率 1.0 で原画像をそのまま返す（変更はしない）。
+    縮小率は scale_settings にそのまま渡せる。
+    """
+    long_side = max(original.size)
+    if long_side <= max_side:
+        return original, 1.0
+    factor = max_side / long_side
+    size = (
+        max(1, round(original.width * factor)),
+        max(1, round(original.height * factor)),
+    )
+    # reducing_gap で先に整数倍の縮小をしてから LANCZOS をかけ、大きな画像でも速くする
+    preview = original.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
+    return preview, factor
 
 
 def _effective_crop(size: tuple[int, int], settings: EditSettings) -> CropRect | None:

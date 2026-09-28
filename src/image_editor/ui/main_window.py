@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PIL import Image
+from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -20,11 +20,17 @@ from image_editor.core.io import (
     UnsupportedImageError,
     is_supported,
     load_image,
-    save_image,
 )
-from image_editor.core.pipeline import EditSettings, apply_edits, output_size
+from image_editor.core.pipeline import (
+    EditSettings,
+    apply_edits,
+    make_preview,
+    output_size,
+    scale_settings,
+)
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.settings_panel import SettingsPanel
+from image_editor.ui.worker import SaveTask
 
 WINDOW_TITLE = "Image Editor"
 INITIAL_SIZE = (1200, 800)
@@ -45,6 +51,8 @@ SAVE_DIALOG_FILTERS: dict[str, str] = {
     "BMP": "BMP (*.bmp)",
 }
 DISCARD_QUESTION = "保存していない変更があります。破棄してよろしいですか？"
+# 設定変更からプレビューを自動更新するまでの待ち時間 (FR-UI-40)
+AUTO_PREVIEW_DELAY_MS = 300
 
 
 def default_save_path(path: Path) -> Path:
@@ -54,6 +62,9 @@ def default_save_path(path: Path) -> Path:
 
 class MainWindow(QMainWindow):
     """左に D&D エリア、右に設定パネル、下にステータスバーを持つメインウィンドウ。"""
+
+    save_finished = pyqtSignal(object)  # Path
+    save_failed = pyqtSignal(object, str)  # Path, エラーメッセージ
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -66,6 +77,17 @@ class MainWindow(QMainWindow):
         # 最後に保存したときの設定（未保存の変更の判定に使う）
         self._saved_settings: EditSettings | None = None
         self._load_notes: list[str] = []
+        # プレビュー用の縮小版と、原本に対する縮小率 (FR: 長辺 1600px)
+        self._preview: Image.Image | None = None
+        self._preview_factor = 1.0
+        # 実行中の保存タスクと、そのときの設定
+        self._save_task: SaveTask | None = None
+        self._saving_settings: EditSettings | None = None
+        self._thread_pool = QThreadPool.globalInstance()
+        self._auto_preview_timer = QTimer(self)
+        self._auto_preview_timer.setSingleShot(True)
+        self._auto_preview_timer.setInterval(AUTO_PREVIEW_DELAY_MS)
+        self._auto_preview_timer.timeout.connect(self._auto_preview)
 
         self.drop_area = DropArea()
         self.drop_area.files_dropped.connect(self._on_files_dropped)
@@ -135,7 +157,7 @@ class MainWindow(QMainWindow):
         未保存の変更があれば確認し、キャンセルされたら読み込まない。
         失敗しても、それまで表示していた画像と設定はそのまま残す。
         """
-        if not self._confirm_discard():
+        if self.is_saving() or not self._confirm_discard():
             return False
         try:
             loaded = load_image(path)
@@ -151,6 +173,7 @@ class MainWindow(QMainWindow):
             return False
 
         self.loaded = loaded
+        self._preview, self._preview_factor = make_preview(loaded.image)
         self._saved_settings = None
         self._load_notes = list(notes or [])
         if loaded.is_animated:
@@ -158,7 +181,8 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.set_active(False)
         self.drop_area.crop_overlay.set_image_size(loaded.image.size)
         self.settings_panel.set_image_size(loaded.image.size)
-        self.drop_area.set_image(loaded.image)
+        self._auto_preview_timer.stop()
+        self.drop_area.set_image(self._preview)
         self._update_status()
         self._update_actions()
         return True
@@ -174,18 +198,20 @@ class MainWindow(QMainWindow):
     # --- プレビュー・保存・リセット -----------------------------------------
 
     def update_preview(self) -> None:
-        """現在の設定を原本に適用してプレビューに表示する。
+        """現在の設定を縮小版に換算して適用し、プレビューに表示する。
 
         範囲指定中なら、範囲指定を終えて編集結果の表示に切り替える。
         """
-        if self.loaded is None:
+        self._auto_preview_timer.stop()
+        if self.loaded is None or self._preview is None:
             return
         if self.settings_panel.is_crop_mode():
             # OFF にすると _set_crop_mode(False) からこのメソッドが再び呼ばれる
             self.settings_panel.set_crop_mode(False)
             return
         try:
-            edited = apply_edits(self.loaded.image, self.settings_panel.settings())
+            settings = scale_settings(self.settings_panel.settings(), self._preview_factor)
+            edited = apply_edits(self._preview, settings)
         except Exception as e:  # NFR-04
             self._show_error("プレビューを更新できません", f"{type(e).__name__}: {e}")
             return
@@ -218,31 +244,53 @@ class MainWindow(QMainWindow):
         self.save_to(path)
 
     def save_to(self, path: Path) -> bool:
-        """現在の設定を原寸で適用して保存する。処理中はボタンを無効化する。"""
-        if self.loaded is None:
+        """現在の設定を原寸で適用して保存する処理をワーカースレッドで開始する。
+
+        開始できたら True を返す。完了すると save_finished、失敗すると save_failed を発行する。
+        処理中はボタンを無効化する。
+        """
+        if self.loaded is None or self.is_saving():
             return False
-        settings = self.settings_panel.settings()
-        self.settings_panel.set_busy(True)
-        self._update_actions(busy=True)
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            save_image(apply_edits(self.loaded.image, settings), path)
-        except Exception as e:  # NFR-04
-            self._show_error("保存できません", f"{path.name}\n({type(e).__name__}: {e})")
-            return False
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.settings_panel.set_busy(False)
-            self._update_actions()
-        self._saved_settings = settings
-        self._update_status(f"保存しました: {path.name}")
+        self._saving_settings = self.settings_panel.settings()
+        task = SaveTask(self.loaded.image, self._saving_settings, path)
+        # 完了通知を受け取るまで Python 側で保持する
+        task.setAutoDelete(False)
+        task.signals.finished.connect(self._on_save_finished)
+        task.signals.failed.connect(self._on_save_failed)
+        self._save_task = task
+        self._set_busy(True)
+        self._update_status(f"保存中… {path.name}")
+        self._thread_pool.start(task)
         return True
+
+    def is_saving(self) -> bool:
+        """保存処理中かを返す。"""
+        return self._save_task is not None
+
+    def _on_save_finished(self, path: Path) -> None:
+        self._saved_settings = self._saving_settings
+        self._finish_save()
+        self._update_status(f"保存しました: {path.name}")
+        self.save_finished.emit(path)
+
+    def _on_save_failed(self, path: Path, message: str) -> None:
+        self._finish_save()
+        self._update_status()
+        self._show_error("保存できません", f"{path.name}\n({message})")
+        self.save_failed.emit(path, message)
+
+    def _finish_save(self) -> None:
+        self._save_task = None
+        self._saving_settings = None
+        self._set_busy(False)
 
     def reset(self) -> None:
         """画像と設定を未読込の状態に戻す。未保存の変更があれば確認する。"""
-        if not self._confirm_discard():
+        if self.is_saving() or not self._confirm_discard():
             return
+        self._auto_preview_timer.stop()
         self.loaded = None
+        self._preview = None
         self._saved_settings = None
         self._load_notes = []
         self.drop_area.crop_overlay.set_active(False)
@@ -266,7 +314,15 @@ class MainWindow(QMainWindow):
         # ドラッグ中の変更はオーバーレイ自身が発生源なので書き戻さない
         if not overlay.is_dragging():
             overlay.set_crop(settings.crop)
-        self._update_status()
+        if not self.is_saving():
+            self._update_status()
+        # 範囲指定中は元画像を表示しているので自動更新しない
+        if self.loaded is not None and not self.settings_panel.is_crop_mode():
+            self._auto_preview_timer.start()
+
+    def _auto_preview(self) -> None:
+        if self.loaded is not None and not self.settings_panel.is_crop_mode():
+            self.update_preview()
 
     def _set_crop_mode(self, enabled: bool) -> None:
         """ON なら原画像全体と選択範囲を表示してドラッグ可能にし、OFF なら編集結果を表示する。"""
@@ -274,7 +330,8 @@ class MainWindow(QMainWindow):
             return
         overlay = self.drop_area.crop_overlay
         if enabled:
-            self.drop_area.set_image(self.loaded.image)
+            self._auto_preview_timer.stop()
+            self.drop_area.set_image(self._preview)
             overlay.set_crop(self.settings_panel.settings().crop)
             overlay.set_active(True)
         else:
@@ -313,10 +370,23 @@ class MainWindow(QMainWindow):
             message += "（" + "／".join(notes) + "）"
         self.status_label.setText(message)
 
-    def _update_actions(self, busy: bool = False) -> None:
+    def _update_actions(self) -> None:
+        busy = self.is_saving()
         enabled = self.loaded is not None and not busy
         self.save_action.setEnabled(enabled)
         self.preview_action.setEnabled(enabled)
+        self.open_action.setEnabled(not busy)
+        self.drop_area.setAcceptDrops(not busy)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.settings_panel.set_busy(busy)
+        self._update_actions()
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        # 保存中のファイルが途中で切れないよう、完了を待ってから閉じる
+        if self.is_saving():
+            self._thread_pool.waitForDone()
+        super().closeEvent(event)
 
     def _show_error(self, title: str, message: str, with_formats: bool = False) -> None:
         if with_formats:
