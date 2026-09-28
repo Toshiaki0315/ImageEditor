@@ -188,3 +188,36 @@ def test_core_filters_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+# --- 白枠なし（プレビュー用） ---------------------------------------------------
+
+
+def test_polaroid_without_border_keeps_size():
+    image = make_sample()
+
+    result = apply_filter(image, FilterType.POLAROID, with_border=False)
+    framed = apply_filter(image, FilterType.POLAROID)
+
+    assert result.size == image.size
+    # 色補正は白枠ありと同じ
+    assert result.getpixel((175, 50)) == framed.getpixel((5 + 175, 5 + 50))
+
+
+def test_polaroid_without_border_keeps_alpha():
+    image = make_sample("RGBA")
+    image.putalpha(100)
+
+    result = apply_filter(image, FilterType.POLAROID, with_border=False)
+
+    assert result.mode == "RGBA"
+    assert result.getpixel((0, 0))[3] == 100
+
+
+@pytest.mark.parametrize("filter_type", [f for f in FilterType if f is not FilterType.POLAROID])
+def test_with_border_has_no_effect_on_other_filters(filter_type):
+    image = make_sample()
+    assert (
+        apply_filter(image, filter_type, with_border=False).tobytes()
+        == apply_filter(image, filter_type).tobytes()
+    )

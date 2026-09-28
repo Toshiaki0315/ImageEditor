@@ -247,11 +247,28 @@ def test_preview_changes_with_filter(loaded_window, filter_type):
 
 
 def test_preview_action_updates(loaded_window):
-    loaded_window.settings_panel.width_spin.setValue(100)
+    panel = loaded_window.settings_panel
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
 
     loaded_window.preview_action.trigger()
 
-    assert loaded_window.drop_area._source.size().width() == 100
+    r, g, b = preview_pixel(loaded_window, 50, 150)
+    assert r == g == b
+
+
+@pytest.mark.parametrize("filter_type", list(FilterType))
+def test_preview_keeps_whole_frame(loaded_window, filter_type):
+    # トリミング・リサイズ・ポラロイドの白枠はプレビューに反映せず、元の画角のまま表示する
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 100, 50))
+    panel.width_spin.setValue(20)
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(filter_type))
+
+    loaded_window.update_preview()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 300)
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 100, 50)
 
 
 def test_status_shows_output_size(loaded_window):
@@ -409,44 +426,35 @@ def drag_on_overlay(qtbot, window, start, end):
     qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=overlay_point(window, *end))
 
 
-def test_crop_mode_shows_original_with_overlay(loaded_window):
-    panel = loaded_window.settings_panel
-    panel.width_spin.setValue(100)
-    loaded_window.update_preview()
-    assert loaded_window.drop_area._source.width() == 100
-
-    panel.crop_mode_check.setChecked(True)
-
+def test_overlay_is_active_right_after_load(loaded_window):
     assert loaded_window.drop_area.crop_overlay.is_active()
-    assert loaded_window.drop_area._source.width() == 400  # 元画像全体
 
 
-def test_crop_mode_off_shows_result(loaded_window):
-    panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
-    panel.set_crop(CropRect(0, 0, 100, 50))
+def test_overlay_is_inactive_without_image(window, questions):
+    assert not window.drop_area.crop_overlay.is_active()
 
-    panel.crop_mode_check.setChecked(False)
 
+def test_overlay_is_inactive_after_reset(loaded_window, questions):
+    loaded_window.reset()
     assert not loaded_window.drop_area.crop_overlay.is_active()
-    assert loaded_window.drop_area._source.width() == 100
 
 
-def test_preview_update_leaves_crop_mode(loaded_window):
-    panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
-    panel.set_crop(CropRect(0, 0, 100, 50))
+def test_drop_still_works_with_overlay(loaded_window, tmp_path, qtbot):
+    # オーバーレイはドロップを受け付けず、下の DropArea に届く
+    overlay = loaded_window.drop_area.crop_overlay
+    assert not overlay.acceptDrops()
+    assert loaded_window.drop_area.acceptDrops()
 
-    loaded_window.preview_action.trigger()
+    other = tmp_path / "dropped.png"
+    Image.new("RGB", (20, 10)).save(other)
+    loaded_window.drop_area.files_dropped.emit([other])
 
-    assert not panel.is_crop_mode()
-    assert not loaded_window.drop_area.crop_overlay.is_active()
-    assert loaded_window.drop_area._source.width() == 100
+    assert loaded_window.loaded.path == other
+    assert overlay.is_active()
 
 
 def test_drag_updates_spin_boxes(loaded_window, qtbot):
     panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
 
     drag_on_overlay(qtbot, loaded_window, (50, 40), (250, 190))
 
@@ -461,7 +469,6 @@ def test_drag_updates_spin_boxes(loaded_window, qtbot):
 
 def test_spin_boxes_update_overlay(loaded_window):
     panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
 
     panel.set_crop(CropRect(10, 20, 30, 40))
 
@@ -470,7 +477,6 @@ def test_spin_boxes_update_overlay(loaded_window):
 
 def test_clear_button_clears_overlay(loaded_window):
     panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
     panel.set_crop(CropRect(10, 20, 30, 40))
 
     panel.clear_crop_button.click()
@@ -479,9 +485,6 @@ def test_clear_button_clears_overlay(loaded_window):
 
 
 def test_dragged_range_matches_saved_image(loaded_window, qtbot, tmp_path):
-    panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
-
     # 元画像は左半分 (x < 200) が赤、右半分が青。境界をまたいで 100〜300 を選ぶ
     drag_on_overlay(qtbot, loaded_window, (100, 50), (300, 250))
     out = tmp_path / "cropped.png"
@@ -496,7 +499,6 @@ def test_dragged_range_matches_saved_image(loaded_window, qtbot, tmp_path):
 
 def test_drag_outside_is_clamped_in_panel(loaded_window, qtbot):
     panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
     overlay = loaded_window.drop_area.crop_overlay
 
     qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=overlay_point(loaded_window, 300, 200))
@@ -508,16 +510,15 @@ def test_drag_outside_is_clamped_in_panel(loaded_window, qtbot):
     assert panel.settings().crop == CropRect(300, 200, 100, 100)
 
 
-def test_loading_new_image_leaves_crop_mode(loaded_window, tmp_path):
-    loaded_window.settings_panel.crop_mode_check.setChecked(True)
+def test_loading_new_image_clears_selection(loaded_window, tmp_path, questions):
     other = tmp_path / "other.png"
     Image.new("RGB", (50, 50)).save(other)
-    loaded_window.settings_panel.clear_crop()  # 未保存の変更なし
+    loaded_window.settings_panel.set_crop(CropRect(0, 0, 10, 10))
 
     loaded_window.load_file(other)
 
-    assert not loaded_window.settings_panel.is_crop_mode()
-    assert not loaded_window.drop_area.crop_overlay.is_active()
+    assert loaded_window.drop_area.crop_overlay.crop() is None
+    assert loaded_window.drop_area.crop_overlay.is_active()
 
 
 # --- 縮小プレビューとワーカースレッド -------------------------------------------
@@ -541,22 +542,20 @@ def test_preview_uses_downscaled_image(wide_window):
     assert "原寸 3200×800 px" in wide_window.status_label.text()
 
 
-def test_preview_settings_are_scaled(wide_window):
+def test_crop_is_kept_in_original_coordinates(wide_window):
     panel = wide_window.settings_panel
-    panel.set_crop(CropRect(1200, 0, 800, 800))  # 赤と青の境界をまたぐ
+    panel.set_crop(CropRect(1200, 0, 800, 800))
 
     wide_window.update_preview()
 
-    source = wide_window.drop_area._source
-    assert (source.width(), source.height()) == (400, 400)  # 800x800 の 1/2
-    assert source.pixelColor(50, 200).getRgb()[:3] == (220, 60, 30)
-    assert source.pixelColor(350, 200).getRgb()[:3] == (40, 120, 200)
+    # プレビューは縮小版の全体、選択範囲と出力サイズは原画像の座標系
+    assert wide_window.drop_area._source.width() == 1600
+    assert wide_window.drop_area.crop_overlay.crop() == CropRect(1200, 0, 800, 800)
     assert "出力 800×800 px" in wide_window.status_label.text()
 
 
-def test_crop_mode_shows_downscaled_original(wide_window, qtbot):
+def test_drag_on_downscaled_preview(wide_window, qtbot):
     panel = wide_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
 
     # 縮小表示でも、ドラッグ範囲は原画像の座標系で得られる
     drag_on_overlay(qtbot, wide_window, (400, 100), (2000, 700))
@@ -586,22 +585,25 @@ def test_auto_preview_is_debounced(loaded_window, qtbot, monkeypatch):
     monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
 
     panel = loaded_window.settings_panel
-    for width in (390, 380, 370, 360):
-        panel.width_spin.setValue(width)
+    for filter_type in (FilterType.SEPIA, FilterType.MONOTONE, FilterType.HIGH_TONE):
+        panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(filter_type))
 
     qtbot.wait(600)
     assert len(calls) == 1
 
 
-def test_no_auto_preview_in_crop_mode(loaded_window, qtbot):
+def test_no_redraw_when_only_crop_or_size_changes(loaded_window, qtbot, monkeypatch):
+    # プレビューに反映されるのはフィルターだけなので、範囲やサイズの変更では描き直さない
+    calls = []
+    original = loaded_window.update_preview
+    monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
     panel = loaded_window.settings_panel
-    panel.crop_mode_check.setChecked(True)
 
     panel.set_crop(CropRect(0, 0, 100, 100))
+    panel.width_spin.setValue(50)
     qtbot.wait(500)
 
-    assert panel.is_crop_mode()
-    assert loaded_window.drop_area._source.width() == 400  # 元画像のまま
+    assert calls == []
 
 
 def test_save_runs_in_worker_thread(loaded_window, qtbot, tmp_path, monkeypatch):

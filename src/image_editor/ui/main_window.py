@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from image_editor.core.filters import FilterType
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
@@ -23,10 +24,9 @@ from image_editor.core.io import (
 )
 from image_editor.core.pipeline import (
     EditSettings,
-    apply_edits,
     make_preview,
     output_size,
-    scale_settings,
+    render_preview,
 )
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.settings_panel import SettingsPanel
@@ -77,9 +77,9 @@ class MainWindow(QMainWindow):
         # 最後に保存したときの設定（未保存の変更の判定に使う）
         self._saved_settings: EditSettings | None = None
         self._load_notes: list[str] = []
-        # プレビュー用の縮小版と、原本に対する縮小率 (FR: 長辺 1600px)
+        # プレビュー用の縮小版（長辺 1600px）と、表示中のプレビューに適用したフィルター
         self._preview: Image.Image | None = None
-        self._preview_factor = 1.0
+        self._rendered_filter: FilterType | None = None
         # 実行中の保存タスクと、そのときの設定
         self._save_task: SaveTask | None = None
         self._saving_settings: EditSettings | None = None
@@ -94,7 +94,6 @@ class MainWindow(QMainWindow):
         self.settings_panel = SettingsPanel()
         self.settings_panel.setMinimumWidth(SETTINGS_PANEL_WIDTH)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
-        self.settings_panel.crop_mode_toggled.connect(self._set_crop_mode)
         self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
         self.settings_panel.preview_requested.connect(self.update_preview)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
@@ -173,13 +172,15 @@ class MainWindow(QMainWindow):
             return False
 
         self.loaded = loaded
-        self._preview, self._preview_factor = make_preview(loaded.image)
+        self._preview, _ = make_preview(loaded.image)
+        self._rendered_filter = FilterType.NONE
         self._saved_settings = None
         self._load_notes = list(notes or [])
         if loaded.is_animated:
             self._load_notes.append("複数フレームの画像のため、先頭フレームのみ扱います")
-        self.drop_area.crop_overlay.set_active(False)
+        # 画像の上ではいつでもドラッグでトリミング範囲を指定できる
         self.drop_area.crop_overlay.set_image_size(loaded.image.size)
+        self.drop_area.crop_overlay.set_active(True)
         self.settings_panel.set_image_size(loaded.image.size)
         self._auto_preview_timer.stop()
         self.drop_area.set_image(self._preview)
@@ -201,24 +202,22 @@ class MainWindow(QMainWindow):
     # --- プレビュー・保存・リセット -----------------------------------------
 
     def update_preview(self) -> None:
-        """現在の設定を縮小版に換算して適用し、プレビューに表示する。
+        """縮小版の画像全体にフィルターの色を適用してプレビューに表示する。
 
-        範囲指定中なら、範囲指定を終えて編集結果の表示に切り替える。
+        トリミング範囲はいつでも選べるよう、元の画角のまま表示してマスクで示す。
+        リサイズとポラロイドの白枠は表示に反映せず、出力サイズはステータスバーに出す。
         """
         self._auto_preview_timer.stop()
         if self.loaded is None or self._preview is None:
             return
-        if self.settings_panel.is_crop_mode():
-            # OFF にすると _set_crop_mode(False) からこのメソッドが再び呼ばれる
-            self.settings_panel.set_crop_mode(False)
-            return
+        settings = self.settings_panel.settings()
         try:
-            settings = scale_settings(self.settings_panel.settings(), self._preview_factor)
-            edited = apply_edits(self._preview, settings)
+            rendered = render_preview(self._preview, settings)
         except Exception as e:  # NFR-04
             self._show_error("プレビューを更新できません", f"{type(e).__name__}: {e}")
             return
-        self.drop_area.set_image(edited)
+        self._rendered_filter = settings.filter
+        self.drop_area.set_image(rendered)
 
     def save_file_dialog(self) -> None:
         """保存ダイアログを開き、原寸で処理して書き出す。"""
@@ -294,6 +293,7 @@ class MainWindow(QMainWindow):
         self._auto_preview_timer.stop()
         self.loaded = None
         self._preview = None
+        self._rendered_filter = None
         self._saved_settings = None
         self._load_notes = []
         self.drop_area.crop_overlay.set_active(False)
@@ -321,26 +321,12 @@ class MainWindow(QMainWindow):
             overlay.set_crop(settings.crop)
         if not self.is_saving():
             self._update_status()
-        # 範囲指定中は元画像を表示しているので自動更新しない
-        if self.loaded is not None and not self.settings_panel.is_crop_mode():
+        # プレビューに反映されるのはフィルターだけなので、変わったときだけ描き直す
+        if self.loaded is not None and settings.filter is not self._rendered_filter:
             self._auto_preview_timer.start()
 
     def _auto_preview(self) -> None:
-        if self.loaded is not None and not self.settings_panel.is_crop_mode():
-            self.update_preview()
-
-    def _set_crop_mode(self, enabled: bool) -> None:
-        """ON なら原画像全体と選択範囲を表示してドラッグ可能にし、OFF なら編集結果を表示する。"""
-        if self.loaded is None:
-            return
-        overlay = self.drop_area.crop_overlay
-        if enabled:
-            self._auto_preview_timer.stop()
-            self.drop_area.set_image(self._preview)
-            overlay.set_crop(self.settings_panel.settings().crop)
-            overlay.set_active(True)
-        else:
-            overlay.set_active(False)
+        if self.loaded is not None:
             self.update_preview()
 
     def _confirm_discard(self) -> bool:
