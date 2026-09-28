@@ -601,3 +601,31 @@ def test_brightness_is_applied_before_filter():
 def test_render_preview_applies_brightness():
     image = Image.new("RGB", (40, 30), (128, 128, 128))
     assert render_preview(image, EditSettings(brightness=100)).getpixel((0, 0))[0] > 200
+
+
+# --- コントラスト -------------------------------------------------------------
+
+
+def test_default_contrast_is_zero():
+    assert EditSettings().contrast == 0
+
+
+def test_contrast_is_applied():
+    image = Image.new("RGB", (20, 20), (64, 64, 64))
+    assert apply_edits(image, EditSettings(contrast=100)).getpixel((0, 0))[0] < 64
+    assert apply_edits(image, EditSettings(contrast=-100)).getpixel((0, 0))[0] > 64
+
+
+def test_contrast_after_brightness():
+    # 暗い灰色 (64) を明るさで 128 より上に持ち上げてからコントラストをかける
+    # （明るさ → コントラストの順）。
+    # 逆順なら 64 はコントラストで暗くなってから持ち上がるので、結果は明るさだけのときより暗くなる
+    image = Image.new("RGB", (20, 20), (64, 64, 64))
+    brightened = apply_edits(image, EditSettings(brightness=100)).getpixel((0, 0))[0]
+    both = apply_edits(image, EditSettings(brightness=100, contrast=100)).getpixel((0, 0))[0]
+    assert both > brightened
+
+
+def test_render_preview_applies_contrast():
+    image = Image.new("RGB", (40, 30), (64, 64, 64))
+    assert render_preview(image, EditSettings(contrast=100)).getpixel((0, 0))[0] < 64

@@ -8,6 +8,7 @@ from image_editor.core.effects import (
     aging,
     brightness,
     color_temperature,
+    contrast,
     kelvin_to_rgb,
     saturation,
     temperature_multipliers,
@@ -363,3 +364,74 @@ def test_brightness_does_not_modify_input():
 def test_brightness_out_of_range(amount):
     with pytest.raises(ValueError):
         brightness(Image.new("RGB", (10, 10)), amount)
+
+
+# --- コントラスト -------------------------------------------------------------
+
+
+def gray_levels(amount: int) -> list[int]:
+    """暗・中・明の灰色にコントラストをかけた値。"""
+    image = Image.new("RGB", (3, 1))
+    for x, value in enumerate((64, 128, 192)):
+        image.putpixel((x, 0), (value,) * 3)
+    result = contrast(image, amount)
+    return [result.getpixel((x, 0))[0] for x in range(3)]
+
+
+def test_contrast_zero_is_unchanged_copy():
+    image = colorful()
+
+    result = contrast(image, 0)
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+def test_contrast_plus_widens_differences():
+    dark, mid, bright = gray_levels(100)
+    assert dark < 64 and bright > 192
+    assert abs(mid - 128) <= 1
+
+
+def test_contrast_minus_narrows_differences():
+    dark, mid, bright = gray_levels(-100)
+    assert 64 < dark < 128 < bright < 192
+    assert (bright - dark) == pytest.approx((192 - 64) * 0.5, abs=2)
+    assert abs(mid - 128) <= 1
+
+
+def test_contrast_is_monotonic():
+    spans = []
+    for amount in (-100, -50, 0, 50, 100):
+        dark, _, bright = gray_levels(amount)
+        spans.append(bright - dark)
+    assert spans == sorted(spans)
+
+
+def test_contrast_plus_keeps_black_and_white():
+    result = contrast(colorful(), 100)
+    assert result.getpixel((165, 5)) == (0, 0, 0)
+    assert result.getpixel((205, 5)) == (255, 255, 255)
+
+
+def test_contrast_keeps_alpha():
+    image = colorful().convert("RGBA")
+    image.putalpha(77)
+
+    result = contrast(image, 50)
+
+    assert result.mode == "RGBA"
+    assert result.getchannel("A").getextrema() == (77, 77)
+
+
+def test_contrast_does_not_modify_input():
+    image = colorful()
+    before = image.tobytes()
+    contrast(image, -40)
+    assert image.tobytes() == before
+
+
+@pytest.mark.parametrize("amount", [-101, 101])
+def test_contrast_out_of_range(amount):
+    with pytest.raises(ValueError):
+        contrast(Image.new("RGB", (10, 10)), amount)

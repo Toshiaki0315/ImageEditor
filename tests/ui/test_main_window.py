@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QMenu, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
 
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
@@ -910,3 +910,39 @@ def test_sliders_fit_in_window(window, qtbot, size):
 
     assert window.settings_panel.brightness_slider.width() >= 225
     assert window.drop_area.width() >= 400
+
+
+# --- コントラスト -------------------------------------------------------------
+
+
+def test_contrast_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.contrast_slider.setValue(100)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    r, _, b = preview_pixel(loaded_window, 300, 150)
+    assert b - r > before[2] - before[0]  # 明暗の差が広がる
+
+
+def test_saved_image_has_contrast(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.contrast_slider.setValue(-100)
+    out = tmp_path / "flat.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    r, _, b = load_image(out).image.getpixel((300, 150))
+    assert b - r < 200 - 40
+
+
+@pytest.mark.parametrize("size", [(1200, 800), (900, 600)])
+def test_panel_labels_are_not_cut_off(window, qtbot, size):
+    # 「コントラスト」「周辺減光」などのラベルが欠けずに表示される
+    window.resize(*size)
+    qtbot.wait(50)
+    panel = window.settings_panel
+
+    assert panel.width() >= panel.minimumSizeHint().width()
+    for label in panel.findChildren(QLabel):
+        if label.text() and label.isVisible():
+            assert label.width() >= label.sizeHint().width(), label.text()

@@ -1,4 +1,4 @@
-"""フィルターの前後にかける効果（明るさ・色温度・彩度・周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化）。"""
 
 from __future__ import annotations
 
@@ -45,6 +45,11 @@ SATURATION_MAX = 100
 BRIGHTNESS_MIN = -100
 BRIGHTNESS_MAX = 100
 BRIGHTNESS_GAMMA_BASE = 2.0  # ガンマ = BASE ** (-値 / 50)。+100 で 0.25、-100 で 4
+
+# コントラスト（-100〜+100、0 = 変化なし）
+CONTRAST_MIN = -100
+CONTRAST_MAX = 100
+CONTRAST_MIN_SLOPE = 0.5  # -100 のとき、中間の灰色からの差をこの倍率に縮める
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -203,6 +208,40 @@ def brightness(image: Image.Image, amount: int) -> Image.Image:
     curve = _clip_table([255 * (v / 255) ** gamma for v in range(256)])
     alpha = image.getchannel("A") if image.mode == "RGBA" else None
     rgb = image.convert("RGB").point(curve * 3)
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
+
+
+def contrast(image: Image.Image, amount: int) -> Image.Image:
+    """コントラスト（明暗の差）を変えた新しい画像を返す（入力画像は変更しない）。
+
+    amount は -100〜+100（0 は変化なし）。
+    - プラス: S 字のトーンカーブ（smoothstep を amount/100 の割合で混ぜる）で明暗の差を強める。
+      黒 (0) と白 (255) は変えないので、白飛び・黒つぶれしにくい
+    - マイナス: 中間の灰色 (128) に向けて差を縮める（-100 で差が半分）。フェードした調子になる
+
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("コントラスト", amount, CONTRAST_MIN, CONTRAST_MAX)
+    if amount == 0:
+        return image.copy()
+
+    t = abs(amount) / CONTRAST_MAX
+    if amount > 0:
+
+        def curve(x: float) -> float:
+            return (1 - t) * x + t * (3 * x * x - 2 * x * x * x)
+
+    else:
+        slope = 1 - (1 - CONTRAST_MIN_SLOPE) * t
+
+        def curve(x: float) -> float:
+            return 0.5 + (x - 0.5) * slope
+
+    table = _clip_table([255 * curve(v / 255) for v in range(256)])
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    rgb = image.convert("RGB").point(table * 3)
     if alpha is not None:
         rgb.putalpha(alpha)
     return rgb
