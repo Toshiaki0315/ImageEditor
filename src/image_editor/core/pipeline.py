@@ -42,6 +42,15 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     return filters.apply_filter(image, settings.filter)
 
 
+def render_preview(image: Image.Image, settings: EditSettings) -> Image.Image:
+    """プレビュー表示用に、画像全体へフィルターの色だけを適用した新しい画像を返す。
+
+    トリミング範囲の選択をいつでもできるよう、トリミング・リサイズ・ポラロイドの白枠は
+    適用しない（元の画角のまま）。出力サイズは output_size で確認する。
+    """
+    return filters.apply_filter(image, settings.filter, with_border=False)
+
+
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:
     """画像を処理せずに、apply_edits の出力サイズを計算する（ポラロイドの枠を含む）。"""
     size = original_size

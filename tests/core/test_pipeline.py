@@ -11,6 +11,7 @@ from image_editor.core.pipeline import (
     apply_edits,
     make_preview,
     output_size,
+    render_preview,
     scale_settings,
 )
 from image_editor.core.transform import CropRect
@@ -321,3 +322,31 @@ def test_preview_looks_like_full_result(filter_type):
     diff = ImageChops.difference(small, full)
     mean = sum(ImageStat.Stat(diff).mean) / 3
     assert mean < 3
+
+
+# --- render_preview -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("filter_type", list(FilterType))
+def test_render_preview_keeps_whole_frame(filter_type):
+    image = make_sample()
+    settings = EditSettings(crop=CropRect(10, 10, 50, 50), width=20, filter=filter_type)
+
+    result = render_preview(image, settings)
+
+    # トリミング・リサイズ・白枠は適用しない
+    assert result.size == image.size
+    assert result is not image
+
+
+def test_render_preview_applies_filter_color():
+    result = render_preview(make_sample(), EditSettings(filter=FilterType.MONOTONE))
+    r, g, b = result.getpixel((300, 200))
+    assert r == g == b
+
+
+def test_render_preview_does_not_modify_input():
+    image = make_sample()
+    before = image.tobytes()
+    render_preview(image, EditSettings(filter=FilterType.SEPIA))
+    assert image.tobytes() == before

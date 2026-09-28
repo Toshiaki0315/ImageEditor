@@ -148,9 +148,22 @@ def test_drag_outside_image_is_clamped(qtbot, area):
     drag(qtbot, area.crop_overlay, at(600, 400), QPoint(700, 500))  # 右下の外まで
     assert area.crop_overlay.crop() == CropRect(600, 400, 600, 400)
 
-    # QTest は QPoint(0, 0) をウィジェット中央として扱うので (1, 1) を使う
-    drag(qtbot, area.crop_overlay, QPoint(1, 1), at(100, 100))  # 左上の余白から
+    # 画像内から左上の余白までドラッグしても画像の端で止まる
+    # （QTest は QPoint(0, 0) をウィジェット中央として扱うので (1, 1) を使う）
+    drag(qtbot, area.crop_overlay, at(100, 100), QPoint(1, 1))
     assert area.crop_overlay.crop() == CropRect(0, 0, 100, 100)
+
+
+def test_drag_from_margin_does_not_start_selection(qtbot, area, emitted):
+    overlay = area.crop_overlay
+    overlay.set_crop(CropRect(200, 200, 400, 200))
+
+    # 画像の外（上の余白は y < 16）からのドラッグは無視する
+    drag(qtbot, overlay, QPoint(300, 5), at(800, 500))
+
+    assert overlay.crop() == CropRect(200, 200, 400, 200)
+    assert emitted == []
+    assert not overlay.is_dragging()
 
 
 def test_click_clears_selection(qtbot, area, emitted):
@@ -228,3 +241,5 @@ def test_cursor_changes_on_hover(qtbot, area):
     assert overlay.cursor().shape() == Qt.CursorShape.SizeAllCursor
     qtbot.mouseMove(overlay, at(1000, 700))
     assert overlay.cursor().shape() == Qt.CursorShape.CrossCursor
+    qtbot.mouseMove(overlay, QPoint(300, 5))  # 画像の外（余白）
+    assert overlay.cursor().shape() == Qt.CursorShape.ArrowCursor

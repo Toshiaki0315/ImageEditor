@@ -141,9 +141,10 @@ class CropOverlay(QWidget):
             self._drag = _Drag(_DragMode.RESIZE, anchor=self._opposite_corner(corner))
         elif self._crop is not None and self._widget_crop_rect().contains(event.position()):
             self._drag = _Drag(_DragMode.MOVE, anchor=point, start_rect=self._crop)
-        else:
+        elif self._image_rect().contains(event.position()):
             self._drag = _Drag(_DragMode.NEW, anchor=point)
             self._set_crop_and_emit(None)
+        # 画像の外（余白）からは選択を始めない
 
     def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
         if event is None:
@@ -248,8 +249,10 @@ class CropOverlay(QWidget):
             shape = Qt.CursorShape.SizeBDiagCursor
         elif self._crop is not None and self._widget_crop_rect().contains(point):
             shape = Qt.CursorShape.SizeAllCursor
-        else:
+        elif self._image_rect().contains(point):
             shape = Qt.CursorShape.CrossCursor
+        else:
+            shape = Qt.CursorShape.ArrowCursor
         self.setCursor(shape)
 
     def _set_crop_and_emit(self, rect: CropRect | None) -> None:

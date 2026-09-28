@@ -51,17 +51,20 @@ _LABELS: dict[FilterType, str] = {
 }
 
 
-def apply_filter(image: Image.Image, filter_type: FilterType) -> Image.Image:
+def apply_filter(
+    image: Image.Image, filter_type: FilterType, with_border: bool = True
+) -> Image.Image:
     """画像にフィルターを適用した新しい画像を返す（入力画像は変更しない）。
 
     RGB に対してのみ処理し、アルファチャンネルは元のまま戻す。
+    with_border=False ならポラロイドの白枠を付けず、色補正だけを行う（プレビュー用）。
     """
     image = normalize_mode(image)
     if filter_type is FilterType.NONE:
         return image.copy()
 
     rgb, alpha = _split_alpha(image)
-    if filter_type is FilterType.POLAROID:
+    if filter_type is FilterType.POLAROID and with_border:
         return polaroid(rgb, alpha)
 
     filtered = _RGB_FILTERS[filter_type](rgb)
@@ -93,17 +96,7 @@ def polaroid(image: Image.Image, alpha: Image.Image | None = None) -> Image.Imag
 
     alpha を渡すと RGBA で返す（白枠部分は不透明）。
     """
-    toned = ImageEnhance.Contrast(image).enhance(POLAROID_CONTRAST)
-    red, green, blue = toned.split()
-    toned = Image.merge(
-        "RGB",
-        (
-            red.point(_scale_table(POLAROID_RED_FACTOR)),
-            green,
-            blue.point(_scale_table(POLAROID_BLUE_FACTOR)),
-        ),
-    )
-
+    toned = polaroid_tone(image)
     border, bottom = polaroid_border_sizes(image.size)
     width, height = image.size
     canvas_size = (width + border * 2, height + border + bottom)
@@ -115,6 +108,20 @@ def polaroid(image: Image.Image, alpha: Image.Image | None = None) -> Image.Imag
         framed_alpha.paste(alpha, (border, border))
         framed.putalpha(framed_alpha)
     return framed
+
+
+def polaroid_tone(image: Image.Image) -> Image.Image:
+    """RGB 画像にポラロイド風の色補正（コントラスト弱め・黄み）だけを行う。白枠は付けない。"""
+    toned = ImageEnhance.Contrast(image).enhance(POLAROID_CONTRAST)
+    red, green, blue = toned.split()
+    return Image.merge(
+        "RGB",
+        (
+            red.point(_scale_table(POLAROID_RED_FACTOR)),
+            green,
+            blue.point(_scale_table(POLAROID_BLUE_FACTOR)),
+        ),
+    )
 
 
 def polaroid_border_sizes(size: tuple[int, int]) -> tuple[int, int]:
@@ -149,4 +156,5 @@ _RGB_FILTERS: dict[FilterType, Callable[[Image.Image], Image.Image]] = {
     FilterType.SEPIA: sepia,
     FilterType.MONOTONE: monotone,
     FilterType.HIGH_TONE: high_tone,
+    FilterType.POLAROID: polaroid_tone,  # 白枠なし（with_border=False のとき）
 }

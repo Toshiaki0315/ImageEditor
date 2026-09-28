@@ -30,7 +30,6 @@ class SettingsPanel(QWidget):
     preview_requested = pyqtSignal()
     save_requested = pyqtSignal()
     reset_requested = pyqtSignal()
-    crop_mode_toggled = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,7 +64,6 @@ class SettingsPanel(QWidget):
         self.crop_width_spin = _spin_box(0, MAX_SIZE, " px")
         self.crop_height_spin = _spin_box(0, MAX_SIZE, " px")
         self.clear_crop_button = QPushButton("範囲をクリア")
-        self.crop_mode_check = QCheckBox("プレビュー上で範囲を指定")
         crop_box = QGroupBox("トリミング")
         crop_form = QFormLayout(crop_box)
         crop_form.addRow("X", self.crop_x_spin)
@@ -73,7 +71,6 @@ class SettingsPanel(QWidget):
         crop_form.addRow("幅", self.crop_width_spin)
         crop_form.addRow("高さ", self.crop_height_spin)
         crop_form.addRow(self.clear_crop_button)
-        crop_form.addRow(self.crop_mode_check)
 
         # ボタン
         self.preview_button = QPushButton("プレビュー更新")
@@ -98,7 +95,6 @@ class SettingsPanel(QWidget):
         for spin in self._crop_spins():
             spin.valueChanged.connect(lambda _: self._on_crop_edited())
         self.clear_crop_button.clicked.connect(self.clear_crop)
-        self.crop_mode_check.toggled.connect(self._on_crop_mode_toggled)
         self.preview_button.clicked.connect(self.preview_requested)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
@@ -121,7 +117,6 @@ class SettingsPanel(QWidget):
             for spin in self._crop_spins():
                 spin.setValue(0)
             self.keep_aspect_check.setChecked(True)
-            self.crop_mode_check.setChecked(False)
             self.filter_combo.setCurrentIndex(0)
             self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
@@ -170,14 +165,6 @@ class SettingsPanel(QWidget):
         """トリミングを解除する。"""
         self.set_crop(None)
 
-    def is_crop_mode(self) -> bool:
-        """「プレビュー上で範囲を指定」が ON かを返す。"""
-        return self.crop_mode_check.isChecked()
-
-    def set_crop_mode(self, enabled: bool) -> None:
-        """「プレビュー上で範囲を指定」を切り替える（変化すれば crop_mode_toggled を発行）。"""
-        self.crop_mode_check.setChecked(enabled)
-
     def set_busy(self, busy: bool) -> None:
         """処理中はボタンを無効化する。"""
         enabled = not busy and self._image_size is not None
@@ -201,10 +188,6 @@ class SettingsPanel(QWidget):
         if checked:
             self._sync_aspect()
         self._emit_changed()
-
-    def _on_crop_mode_toggled(self, checked: bool) -> None:
-        if not self._updating:
-            self.crop_mode_toggled.emit(checked)
 
     def _on_crop_edited(self) -> None:
         if self._updating:
