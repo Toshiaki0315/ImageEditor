@@ -486,3 +486,31 @@ def test_contrast_slider_is_as_long_as_others(qtbot):
     widget.show()
     qtbot.waitExposed(widget)
     assert widget.contrast_slider.width() == widget.brightness_slider.width() >= 225
+
+
+# --- 露出 ---------------------------------------------------------------------
+
+
+def test_exposure_slider(panel, qtbot):
+    assert panel.exposure_ev() == 0.0
+    assert panel.exposure_value_label.text() == "0.0 EV"
+    assert (panel.exposure_slider.minimum(), panel.exposure_slider.maximum()) == (-50, 50)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.exposure_slider.setValue(13)
+
+    assert blocker.args[0].exposure == pytest.approx(1.3)
+    assert panel.exposure_value_label.text() == "+1.3 EV"
+
+    panel.exposure_slider.setValue(-50)
+    assert panel.exposure_value_label.text() == "-5.0 EV"
+    assert panel.settings().exposure == pytest.approx(-5.0)
+
+
+def test_exposure_is_reset_on_new_image(panel):
+    panel.exposure_slider.setValue(20)
+
+    panel.set_image_size((100, 100))
+
+    assert panel.exposure_ev() == 0.0
+    assert panel.exposure_value_label.text() == "0.0 EV"

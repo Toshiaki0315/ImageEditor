@@ -40,7 +40,9 @@ def test_layout_has_placeholders_and_status_bar(qtbot):
     splitter = window.centralWidget()
     assert isinstance(splitter, QSplitter)
     assert splitter.widget(0) is window.drop_area
-    assert splitter.widget(1) is window.settings_panel
+    # 設定パネルは縦にスクロールできる領域に入っている
+    assert splitter.widget(1) is window.settings_scroll
+    assert window.settings_scroll.widget() is window.settings_panel
     assert window.status_label.text() == "画像が読み込まれていません"
 
 
@@ -946,3 +948,46 @@ def test_panel_labels_are_not_cut_off(window, qtbot, size):
     for label in panel.findChildren(QLabel):
         if label.text() and label.isVisible():
             assert label.width() >= label.sizeHint().width(), label.text()
+
+
+# --- 露出・設定パネルのスクロール -------------------------------------------------
+
+
+def test_exposure_slider_updates_preview(loaded_window, qtbot):
+    before = preview_pixel(loaded_window, 300, 150)  # 青 (40, 120, 200)
+
+    loaded_window.settings_panel.exposure_slider.setValue(10)  # +1.0 EV
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 300, 150) != before, timeout=2000)
+    assert all(a >= b for a, b in zip(preview_pixel(loaded_window, 300, 150), before, strict=True))
+
+
+def test_saved_image_has_exposure(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.exposure_slider.setValue(-20)  # -2.0 EV
+    out = tmp_path / "under.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    assert sum(load_image(out).image.getpixel((300, 150))) < (40 + 120 + 200) * 0.6
+
+
+def test_settings_panel_scrolls_in_small_window(window, qtbot):
+    window.resize(900, 600)
+    qtbot.wait(50)
+    scroll = window.settings_scroll
+    panel = window.settings_panel
+
+    # 縦に収まらないときはスクロールでき、パネルは本来の高さで表示される（詰まらない）
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert panel.height() >= panel.minimumSizeHint().height()
+    # 一番下の「保存」ボタンまでスクロールで届く
+    scroll.ensureWidgetVisible(panel.save_button)
+    qtbot.wait(20)
+    top_left = panel.save_button.mapTo(scroll.viewport(), panel.save_button.rect().topLeft())
+    assert 0 <= top_left.y() <= scroll.viewport().height() - panel.save_button.height()
+
+
+def test_settings_panel_does_not_scroll_in_large_window(window, qtbot):
+    window.resize(1200, 900)
+    qtbot.wait(50)
+    assert window.settings_scroll.verticalScrollBar().maximum() == 0

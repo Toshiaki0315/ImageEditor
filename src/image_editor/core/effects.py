@@ -1,4 +1,4 @@
-"""フィルターの前後にかける効果（明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（露出・明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化）。"""
 
 from __future__ import annotations
 
@@ -50,6 +50,11 @@ BRIGHTNESS_GAMMA_BASE = 2.0  # ガンマ = BASE ** (-値 / 50)。+100 で 0.25�
 CONTRAST_MIN = -100
 CONTRAST_MAX = 100
 CONTRAST_MIN_SLOPE = 0.5  # -100 のとき、中間の灰色からの差をこの倍率に縮める
+
+# 露出（EV = 段。+1.0 で光の量 2 倍、-1.0 で半分）
+EXPOSURE_MIN = -5.0
+EXPOSURE_MAX = 5.0
+EXPOSURE_STEP = 0.1
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -245,3 +250,40 @@ def contrast(image: Image.Image, amount: int) -> Image.Image:
     if alpha is not None:
         rgb.putalpha(alpha)
     return rgb
+
+
+def exposure(image: Image.Image, ev: float) -> Image.Image:
+    """露出を ev 段（EV）変えた新しい画像を返す（入力画像は変更しない）。
+
+    ev は -5.0〜+5.0（0 は変化なし）。色を一度リニア（光の量）に直して 2^ev 倍し、sRGB に
+    戻す。カメラの露出補正と同じく、明るい部分は白く飛び、暗い部分は沈む。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    if not EXPOSURE_MIN <= ev <= EXPOSURE_MAX:
+        raise ValueError(f"露出は {EXPOSURE_MIN}〜{EXPOSURE_MAX} EV で指定してください: {ev}")
+    if ev == 0:
+        return image.copy()
+
+    gain = 2.0**ev
+    table = _clip_table(
+        [255 * _linear_to_srgb(min(1.0, _srgb_to_linear(v / 255) * gain)) for v in range(256)]
+    )
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    rgb = image.convert("RGB").point(table * 3)
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
+
+
+def _srgb_to_linear(value: float) -> float:
+    """sRGB の値 (0〜1) を光の量 (リニア、0〜1) に直す。"""
+    if value <= 0.04045:
+        return value / 12.92
+    return ((value + 0.055) / 1.055) ** 2.4
+
+
+def _linear_to_srgb(value: float) -> float:
+    """光の量 (リニア、0〜1) を sRGB の値 (0〜1) に直す。"""
+    if value <= 0.0031308:
+        return value * 12.92
+    return 1.055 * value ** (1 / 2.4) - 0.055

@@ -9,6 +9,7 @@ from image_editor.core.effects import (
     brightness,
     color_temperature,
     contrast,
+    exposure,
     kelvin_to_rgb,
     saturation,
     temperature_multipliers,
@@ -435,3 +436,67 @@ def test_contrast_does_not_modify_input():
 def test_contrast_out_of_range(amount):
     with pytest.raises(ValueError):
         contrast(Image.new("RGB", (10, 10)), amount)
+
+
+# --- 露出 ---------------------------------------------------------------------
+
+
+def srgb_to_linear(value: int) -> float:
+    x = value / 255
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+
+
+def exposed(value: int, ev: float) -> int:
+    return exposure(Image.new("RGB", (1, 1), (value,) * 3), ev).getpixel((0, 0))[0]
+
+
+def test_exposure_zero_is_unchanged_copy():
+    image = colorful()
+
+    result = exposure(image, 0.0)
+
+    assert result is not image
+    assert result.tobytes() == image.tobytes()
+
+
+@pytest.mark.parametrize(("ev", "ratio"), [(1.0, 2.0), (-1.0, 0.5), (-2.0, 0.25)])
+def test_exposure_scales_light(ev, ratio):
+    # 光の量（リニア）が 2^EV 倍になる
+    before = srgb_to_linear(100)
+    after = srgb_to_linear(exposed(100, ev))
+    assert after / before == pytest.approx(ratio, rel=0.05)
+
+
+def test_exposure_is_monotonic():
+    values = [exposed(100, ev) for ev in (-5.0, -2.5, -0.1, 0.0, 0.1, 2.5, 5.0)]
+    assert values == sorted(values)
+    assert len(set(values)) == len(values)
+
+
+def test_exposure_clips_highlights_and_crushes_shadows():
+    assert exposed(200, 2.0) == 255  # 白く飛ぶ
+    assert exposed(40, -5.0) <= 2  # 黒く沈む
+    assert exposed(0, 5.0) == 0  # 黒は黒のまま
+
+
+def test_exposure_keeps_alpha():
+    image = colorful().convert("RGBA")
+    image.putalpha(44)
+
+    result = exposure(image, 1.5)
+
+    assert result.mode == "RGBA"
+    assert result.getchannel("A").getextrema() == (44, 44)
+
+
+def test_exposure_does_not_modify_input():
+    image = colorful()
+    before = image.tobytes()
+    exposure(image, -1.2)
+    assert image.tobytes() == before
+
+
+@pytest.mark.parametrize("ev", [-5.1, 5.1])
+def test_exposure_out_of_range(ev):
+    with pytest.raises(ValueError):
+        exposure(Image.new("RGB", (10, 10)), ev)

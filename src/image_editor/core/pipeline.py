@@ -28,13 +28,14 @@ class EditSettings:
     saturation: int = 0  # 彩度 -100〜+100（0 = 変化なし）
     brightness: int = 0  # 明るさ -100〜+100（0 = 変化なし）
     contrast: int = 0  # コントラスト -100〜+100（0 = 変化なし）
+    exposure: float = 0.0  # 露出 -5.0〜+5.0 EV（0 = 変化なし）
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング → リサイズ → 明るさ → コントラスト → 色温度 → 彩度 → フィルター
-    → 周辺減光 → 経年劣化 → ポラロイドの白枠。
+    処理順: トリミング → リサイズ → 露出 → 明るさ → コントラスト → 色温度 → 彩度
+    → フィルター → 周辺減光 → 経年劣化 → ポラロイドの白枠。
     白枠には周辺減光・経年劣化をかけない。
     """
     image = original
@@ -46,7 +47,7 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     if size != image.size:
         image = transform.resize(image, size)
 
-    # 写真アプリの基本補正と同じく、明るさ・コントラスト・色温度・彩度はフィルターの前に整える
+    # 写真アプリの基本補正と同じく、露出〜彩度はフィルターの前に整える
     image = _apply_basic_adjustments(image, settings)
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
     image = filters.apply_filter(image, settings.filter, with_border=False)
@@ -155,10 +156,12 @@ def make_preview(
 
 
 def _apply_basic_adjustments(image: Image.Image, settings: EditSettings) -> Image.Image:
-    """フィルターの前にかける基本補正（明るさ → コントラスト → 色温度 → 彩度）。
+    """フィルターの前にかける基本補正（露出 → 明るさ → コントラスト → 色温度 → 彩度）。
 
     変化がなければ入力をそのまま返す。
     """
+    if settings.exposure:
+        image = effects.exposure(image, settings.exposure)
     if settings.brightness:
         image = effects.brightness(image, settings.brightness)
     if settings.contrast:
