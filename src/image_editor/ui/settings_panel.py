@@ -24,6 +24,9 @@ from image_editor.core.effects import (
     BRIGHTNESS_MIN,
     CONTRAST_MAX,
     CONTRAST_MIN,
+    EXPOSURE_MAX,
+    EXPOSURE_MIN,
+    EXPOSURE_STEP,
     SATURATION_MAX,
     SATURATION_MIN,
     TEMPERATURE_MAX,
@@ -101,6 +104,12 @@ class SettingsPanel(QWidget):
         )
         self.brightness_slider.setValue(0)
         self.brightness_value_label.setText(_signed_text(0))
+        # 露出は 0.1 EV 刻み。スライダーの値は「EV × 10」で持つ
+        self.exposure_slider, self.exposure_value_label, exposure_row = _amount_slider(
+            round(EXPOSURE_MIN / EXPOSURE_STEP), round(EXPOSURE_MAX / EXPOSURE_STEP)
+        )
+        self.exposure_slider.setValue(0)
+        self.exposure_value_label.setText(_ev_text(0.0))
         self.contrast_slider, self.contrast_value_label, contrast_row = _amount_slider(
             CONTRAST_MIN, CONTRAST_MAX
         )
@@ -109,6 +118,7 @@ class SettingsPanel(QWidget):
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
+        filter_form.addRow("露出", exposure_row)
         filter_form.addRow("明るさ", brightness_row)
         filter_form.addRow("コントラスト", contrast_row)
         filter_form.addRow("色温度", temperature_row)
@@ -163,6 +173,7 @@ class SettingsPanel(QWidget):
         self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
         self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
         self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
+        self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
         self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
@@ -192,6 +203,7 @@ class SettingsPanel(QWidget):
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
             self.saturation_slider.setValue(0)
             self.brightness_slider.setValue(0)
+            self.exposure_slider.setValue(0)
             self.contrast_slider.setValue(0)
             self.trim_button.setChecked(False)
             if size is None:
@@ -229,6 +241,7 @@ class SettingsPanel(QWidget):
             temperature=self.temperature_kelvin(),
             saturation=self.saturation_slider.value(),
             brightness=self.brightness_slider.value(),
+            exposure=self.exposure_ev(),
             contrast=self.contrast_slider.value(),
         )
 
@@ -309,6 +322,14 @@ class SettingsPanel(QWidget):
 
     def _on_brightness_changed(self, value: int) -> None:
         self.brightness_value_label.setText(_signed_text(value))
+        self._emit_changed()
+
+    def exposure_ev(self) -> float:
+        """露出スライダーの値を EV で返す（0.1 刻み）。"""
+        return self.exposure_slider.value() / round(1 / EXPOSURE_STEP)
+
+    def _on_exposure_changed(self, _value: int) -> None:
+        self.exposure_value_label.setText(_ev_text(self.exposure_ev()))
         self._emit_changed()
 
     def _on_contrast_changed(self, value: int) -> None:
@@ -410,6 +431,11 @@ class _Updating:
 
     def __exit__(self, *exc: object) -> None:
         self._panel._updating = self._previous
+
+
+def _ev_text(ev: float) -> str:
+    """露出を「+1.3 EV」「-0.5 EV」「0.0 EV」のように表示する。"""
+    return f"{ev:+.1f} EV" if ev else "0.0 EV"
 
 
 def _signed_text(value: int) -> str:

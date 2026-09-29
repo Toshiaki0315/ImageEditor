@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QSplitter,
     QWidget,
 )
@@ -100,13 +101,24 @@ class MainWindow(QMainWindow):
         self.settings_panel.save_requested.connect(self.save_file_dialog)
         self.settings_panel.reset_requested.connect(self.reset)
 
+        # 項目が多く、小さいウィンドウでは縦に収まらないので、設定パネルは縦にスクロールできる
+        # ようにする（横はスクロールさせず、スクロールバーの分も含めて欠けない幅を確保する）
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidget(self.settings_panel)
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_bar_width = self.settings_scroll.verticalScrollBar().sizeHint().width()
+        self.settings_scroll.setMinimumWidth(SETTINGS_PANEL_WIDTH + scroll_bar_width)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.drop_area)
-        splitter.addWidget(self.settings_panel)
+        splitter.addWidget(self.settings_scroll)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setChildrenCollapsible(False)
-        splitter.setSizes([INITIAL_SIZE[0] - SETTINGS_PANEL_WIDTH, SETTINGS_PANEL_WIDTH])
+        panel_width = self.settings_scroll.minimumWidth()
+        splitter.setSizes([INITIAL_SIZE[0] - panel_width, panel_width])
         self.setCentralWidget(splitter)
 
         self._create_menus()
@@ -335,6 +347,7 @@ class MainWindow(QMainWindow):
             settings.filter,
             settings.temperature,
             settings.saturation,
+            settings.exposure,
             settings.brightness,
             settings.contrast,
             settings.vignette,

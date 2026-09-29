@@ -629,3 +629,28 @@ def test_contrast_after_brightness():
 def test_render_preview_applies_contrast():
     image = Image.new("RGB", (40, 30), (64, 64, 64))
     assert render_preview(image, EditSettings(contrast=100)).getpixel((0, 0))[0] < 64
+
+
+# --- 露出 ---------------------------------------------------------------------
+
+
+def test_default_exposure_is_zero():
+    assert EditSettings().exposure == 0.0
+
+
+def test_exposure_is_applied():
+    image = Image.new("RGB", (20, 20), (100, 100, 100))
+    assert apply_edits(image, EditSettings(exposure=1.0)).getpixel((0, 0))[0] > 120
+    assert apply_edits(image, EditSettings(exposure=-1.0)).getpixel((0, 0))[0] < 80
+
+
+def test_exposure_before_brightness():
+    # 露出で白く飛んだ部分は、その後の明るさ（トーンカーブ）でも白のまま
+    image = Image.new("RGB", (20, 20), (200, 200, 200))
+    settings = EditSettings(exposure=3.0, brightness=-100)
+    assert apply_edits(image, settings).getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_render_preview_applies_exposure():
+    image = Image.new("RGB", (40, 30), (100, 100, 100))
+    assert render_preview(image, EditSettings(exposure=2.0)).getpixel((0, 0))[0] > 150
