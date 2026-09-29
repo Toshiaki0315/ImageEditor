@@ -38,7 +38,7 @@ def test_initial_values_are_original_size(panel):
 def test_filter_combo_has_labels(panel):
     labels = [panel.filter_combo.itemText(i) for i in range(panel.filter_combo.count())]
     assert labels == [f.label for f in FilterType]
-    assert labels[-2:] == ["ポジフィルム風", "レトロカメラ風"]
+    assert labels[-5:] == ["ハイキー", "ローキー", "ドラマチック", "モダン", "ナチュラル"]
 
 
 def test_set_image_size_resets_everything(panel):
