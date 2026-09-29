@@ -40,6 +40,11 @@ def test_filter_labels():
         "ポラロイド風",
         "ポジフィルム風",
         "レトロカメラ風",
+        "ハイキー",
+        "ローキー",
+        "ドラマチック",
+        "モダン",
+        "ナチュラル",
     ]
 
 
@@ -306,3 +311,98 @@ def test_add_grain_strength():
     low, high = result.getchannel("G").getextrema()
     assert 118 <= low < 128 < high <= 138
     assert add_grain(image, 0, seed=1).tobytes() == image.tobytes()
+
+
+# --- ハイキー・ローキー・ドラマチック・モダン・ナチュラル -----------------------------
+
+
+def tones() -> Image.Image:
+    """暗・中・明の灰色と色の帯を持つ 200x40 画像。"""
+    image = Image.new("RGB", (200, 40))
+    for i, color in enumerate(
+        [(0, 0, 0), (64, 64, 64), (128, 128, 128), (192, 192, 192), (255, 255, 255)]
+    ):
+        image.paste(color, (i * 20, 0, (i + 1) * 20, 40))
+    for i, color in enumerate([(200, 60, 40), (40, 160, 80), (50, 70, 210), (230, 190, 60)]):
+        image.paste(color, (100 + i * 25, 0, 100 + (i + 1) * 25, 40))
+    return image
+
+
+def level(image: Image.Image, index: int) -> int:
+    """index 番目の灰色の帯（0: 黒 〜 4: 白）の G の値。"""
+    return image.getpixel((index * 20 + 10, 20))[1]
+
+
+def color_saturation(image: Image.Image) -> float:
+    return ImageStat.Stat(image.crop((100, 0, 200, 40)).convert("HSV")).mean[1]
+
+
+def luma(image: Image.Image) -> float:
+    return ImageStat.Stat(image.convert("L")).mean[0]
+
+
+def test_high_key_is_bright_and_soft():
+    image = tones()
+    result = apply_filter(image, FilterType.HIGH_KEY)
+
+    assert luma(result) > luma(image) + 25
+    assert level(result, 0) >= 15  # 黒も少し浮く
+    assert level(result, 1) > 64 + 40  # 暗部を大きく持ち上げる
+    assert level(result, 4) == 255
+    assert color_saturation(result) < color_saturation(image)
+
+
+def test_low_key_is_dark_and_keeps_highlights():
+    image = tones()
+    result = apply_filter(image, FilterType.LOW_KEY)
+
+    assert luma(result) < luma(image) - 20
+    assert level(result, 2) < 128 - 40  # 中間を沈める
+    assert level(result, 4) == 255  # 明部は残す
+    assert level(result, 0) == 0
+
+
+def test_dramatic_widens_tonal_range():
+    image = tones()
+    result = apply_filter(image, FilterType.DRAMATIC)
+
+    assert level(result, 1) < 64 - 20
+    assert level(result, 3) > 192
+    assert level(result, 4) < 255  # 全体をやや締める
+    assert color_saturation(result) < color_saturation(image)
+
+
+def test_modern_is_matte_and_cool():
+    result = apply_filter(tones(), FilterType.MODERN)
+
+    assert level(result, 0) >= 15  # 黒が浮く
+    assert level(result, 4) <= 246  # 白を抑える
+    r, _, b = result.getpixel((50, 20))  # 中間の灰色
+    assert b > r
+
+
+def test_natural_is_subtle():
+    image = tones()
+    result = apply_filter(image, FilterType.NATURAL)
+
+    assert abs(luma(result) - luma(image)) < 6  # 明るさはほぼ同じ
+    ratio = color_saturation(result) / color_saturation(image)
+    assert 1.0 < ratio < 1.3  # 彩度はわずかに上がる
+    r, _, b = result.getpixel((50, 20))
+    assert r > b  # ほんのり暖色
+
+
+@pytest.mark.parametrize(
+    "filter_type",
+    [
+        FilterType.HIGH_KEY,
+        FilterType.LOW_KEY,
+        FilterType.DRAMATIC,
+        FilterType.MODERN,
+        FilterType.NATURAL,
+    ],
+)
+def test_new_tastes_keep_size_and_mode(filter_type):
+    image = tones()
+    result = apply_filter(image, filter_type)
+    assert result.size == image.size and result.mode == "RGB"

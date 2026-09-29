@@ -41,6 +41,29 @@ RETRO_TINT = (1.04, 1.0, 0.88)  # 暖色寄りにする係数 (R, G, B)
 RETRO_GRAIN = 10  # 粒子の強さ（明るさの最大変化量）
 RETRO_GRAIN_SEED = 20260928  # 粒子の模様を毎回同じにするための乱数シード
 
+# トーン系の加工（トーンカーブ + 色味の係数 (R, G, B) + 彩度）
+# ハイキー: 明るく軽やか。中間〜暗部を大きく持ち上げ、黒も少し浮かせてコントラストを弱める
+HIGH_KEY_GAMMA = 0.6  # 出力 = 黒の浮き + (1 - 黒の浮き) × 入力^ガンマ
+HIGH_KEY_BLACK = 20
+HIGH_KEY_SATURATION = 0.85
+# ローキー: 暗く重厚。中間〜暗部を沈め、明部は残す
+LOW_KEY_GAMMA = 1.8
+LOW_KEY_SATURATION = 0.9
+# ドラマチック: 強い S 字カーブで明暗を強調し、彩度を落として全体をやや締める
+DRAMATIC_CURVE = 0.7  # 2 重の S 字カーブを混ぜる割合
+DRAMATIC_GAIN = 0.95
+DRAMATIC_SATURATION = 0.45  # S 字カーブで色の差も広がるので、先に強めに下げておく
+# モダン: 黒を少し浮かせたマット調、やや寒色で彩度控えめ
+MODERN_CURVE = 0.3
+MODERN_BLACK = 18
+MODERN_WHITE = 245
+MODERN_TINT = (0.97, 1.0, 1.05)
+MODERN_SATURATION = 0.85
+# ナチュラル: 彩度と明暗差をわずかに上げ、ほんのり暖色
+NATURAL_CURVE = 0.15
+NATURAL_TINT = (1.02, 1.0, 0.98)
+NATURAL_SATURATION = 1.12
+
 
 class FilterType(Enum):
     """加工の種類。"""
@@ -52,6 +75,11 @@ class FilterType(Enum):
     POLAROID = "polaroid"
     POSITIVE_FILM = "positive_film"
     RETRO_CAMERA = "retro_camera"
+    HIGH_KEY = "high_key"
+    LOW_KEY = "low_key"
+    DRAMATIC = "dramatic"
+    MODERN = "modern"
+    NATURAL = "natural"
 
     @property
     def label(self) -> str:
@@ -67,6 +95,11 @@ _LABELS: dict[FilterType, str] = {
     FilterType.POLAROID: "ポラロイド風",
     FilterType.POSITIVE_FILM: "ポジフィルム風",
     FilterType.RETRO_CAMERA: "レトロカメラ風",
+    FilterType.HIGH_KEY: "ハイキー",
+    FilterType.LOW_KEY: "ローキー",
+    FilterType.DRAMATIC: "ドラマチック",
+    FilterType.MODERN: "モダン",
+    FilterType.NATURAL: "ナチュラル",
 }
 
 
@@ -195,6 +228,70 @@ def add_grain(image: Image.Image, strength: int, seed: int) -> Image.Image:
     return ImageChops.subtract(image, Image.merge("RGB", (darker,) * 3))
 
 
+def high_key(image: Image.Image) -> Image.Image:
+    """RGB 画像をハイキー（明るく軽やか、コントラスト弱め）にする。"""
+    black = HIGH_KEY_BLACK / 255
+    return _tone(
+        image,
+        lambda x: black + (1 - black) * x**HIGH_KEY_GAMMA,
+        saturation=HIGH_KEY_SATURATION,
+    )
+
+
+def low_key(image: Image.Image) -> Image.Image:
+    """RGB 画像をローキー（暗く重厚、明部は残す）にする。"""
+    return _tone(image, lambda x: x**LOW_KEY_GAMMA, saturation=LOW_KEY_SATURATION)
+
+
+def dramatic(image: Image.Image) -> Image.Image:
+    """RGB 画像をドラマチック（強い明暗、彩度控えめ）にする。"""
+
+    def curve(x: float) -> float:
+        once = _smoothstep(x)
+        twice = _smoothstep(once)
+        return ((1 - DRAMATIC_CURVE) * once + DRAMATIC_CURVE * twice) * DRAMATIC_GAIN
+
+    return _tone(image, curve, saturation=DRAMATIC_SATURATION)
+
+
+def modern(image: Image.Image) -> Image.Image:
+    """RGB 画像をモダン（黒の浮いたマット調、やや寒色、彩度控えめ）にする。"""
+    black, white = MODERN_BLACK / 255, MODERN_WHITE / 255
+
+    def curve(x: float) -> float:
+        s_curve = (1 - MODERN_CURVE) * x + MODERN_CURVE * _smoothstep(x)
+        return black + (white - black) * s_curve
+
+    return _tone(image, curve, MODERN_TINT, MODERN_SATURATION)
+
+
+def natural(image: Image.Image) -> Image.Image:
+    """RGB 画像をナチュラル（彩度と明暗差をわずかに上げ、ほんのり暖色）にする。"""
+    return _tone(
+        image,
+        lambda x: (1 - NATURAL_CURVE) * x + NATURAL_CURVE * _smoothstep(x),
+        NATURAL_TINT,
+        NATURAL_SATURATION,
+    )
+
+
+def _tone(
+    image: Image.Image,
+    curve: Callable[[float], float],
+    tint: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    saturation: float = 1.0,
+) -> Image.Image:
+    """彩度を変えてから、トーンカーブ (0〜1 → 0〜1) と色味の係数を 1 回の LUT でかける。"""
+    if saturation != 1.0:
+        image = ImageEnhance.Color(image).enhance(saturation)
+    levels = [curve(v / 255) * 255 for v in range(256)]
+    return image.point(_clip_table([level * factor for factor in tint for level in levels]))
+
+
+def _smoothstep(x: float) -> float:
+    return x * x * (3 - 2 * x)
+
+
 def polaroid_border_sizes(size: tuple[int, int]) -> tuple[int, int]:
     """ポラロイドの白枠の太さ (上・左・右, 下) を返す。四捨五入、最小 1px。"""
     short_side = min(size)
@@ -235,4 +332,9 @@ _RGB_FILTERS: dict[FilterType, Callable[[Image.Image], Image.Image]] = {
     FilterType.POLAROID: polaroid_tone,  # 白枠なし（with_border=False のとき）
     FilterType.POSITIVE_FILM: positive_film,
     FilterType.RETRO_CAMERA: retro_camera,
+    FilterType.HIGH_KEY: high_key,
+    FilterType.LOW_KEY: low_key,
+    FilterType.DRAMATIC: dramatic,
+    FilterType.MODERN: modern,
+    FilterType.NATURAL: natural,
 }
