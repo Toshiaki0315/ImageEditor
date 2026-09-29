@@ -6,7 +6,7 @@ import random
 from collections.abc import Callable
 from enum import Enum
 
-from PIL import Image, ImageChops, ImageEnhance, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from image_editor.core.io import normalize_mode
 
@@ -64,6 +64,57 @@ NATURAL_CURVE = 0.15
 NATURAL_TINT = (1.02, 1.0, 0.98)
 NATURAL_SATURATION = 1.12
 
+# シネマティック: 暗部を青緑、明部をオレンジに寄せる（ティール＆オレンジ）
+CINEMATIC_CURVE = 0.3
+CINEMATIC_SPLIT = 0.10  # 明部は R を上げ B を下げ、暗部はその逆
+CINEMATIC_SHADOW_GREEN = 0.04  # 暗部に足す緑（青緑にする）
+CINEMATIC_SATURATION = 0.9
+# ノワール: コントラストの強い白黒。黒を深く、硬く
+NOIR_CURVE = 0.9  # 2 重の S 字カーブを混ぜる割合
+NOIR_GAMMA = 1.25  # 黒を深くする
+# ブリーチバイパス: 色を大きく抜いて明暗を強くし、粒子でざらっとさせる
+BLEACH_SATURATION = 0.25  # S 字カーブで色の差も広がるので、先に強めに下げておく
+BLEACH_CURVE = 0.8
+BLEACH_GRAIN = 8
+BLEACH_GRAIN_SEED = 19440606
+# パステル: 黒を大きく浮かせて淡く明るく、色を柔らかく
+PASTEL_BLACK = 70
+PASTEL_GAMMA = 0.8
+PASTEL_TINT = (1.02, 0.99, 1.03)
+PASTEL_SATURATION = 0.7
+# クロスプロセス: R は強い S 字、G は持ち上げ、B は狭い範囲に圧縮（暗部を青紫、明部を黄緑に）
+CROSS_RED_CURVE = 0.8
+CROSS_GREEN_GAMMA = 0.85
+CROSS_BLUE_RANGE = (0.2, 0.75)
+CROSS_SATURATION = 1.15
+# 青写真（サイアノタイプ）: 明るさを濃紺〜淡い水色のグラデーションで表す
+CYANOTYPE_DARK = (10, 35, 80)
+CYANOTYPE_LIGHT = (220, 236, 248)
+# 夏らしい: 明るく、青と緑を爽やかに
+SUMMER_GAMMA = 0.85
+SUMMER_TINT = (0.97, 1.03, 1.07)
+SUMMER_SATURATION = 1.25
+# 秋らしい: 暖かく落ち着いた色
+AUTUMN_CURVE = 0.2
+AUTUMN_GAMMA = 1.05
+AUTUMN_TINT = (1.08, 0.99, 0.82)
+AUTUMN_SATURATION = 1.05
+# ソフトフォーカス: 明るい部分をにじませ、全体をわずかにぼかす
+# ぼかしの半径（短辺に対する比率。縮小プレビューと原寸で見た目をそろえる）
+SOFT_RADIUS_RATIO = 0.015
+SOFT_GLOW_THRESHOLD = 0.55  # これより明るい部分をにじませる
+SOFT_GLOW_STRENGTH = 0.7
+SOFT_BLUR_MIX = 0.25
+# HDR 風: 大きな半径のアンシャープマスクで細部の明暗を強調し、暗部を持ち上げる
+HDR_RADIUS_RATIO = 0.02  # 短辺に対する比率
+HDR_DETAIL_PERCENT = 90
+HDR_GAMMA = 0.85
+HDR_SATURATION = 1.15
+# 赤外線風: 緑を明るく青を暗くした明るさに、R と B を入れ替えた色を少し混ぜる
+INFRARED_WEIGHTS = (-0.2, 1.5, -0.9, 0.0)  # 明るさ = R, G, B の重み付き和（0〜255 に収める）
+INFRARED_GAMMA = 0.6  # 草木をより白く光らせる
+INFRARED_COLOR_MIX = 0.3
+
 
 class FilterType(Enum):
     """加工の種類。"""
@@ -80,6 +131,17 @@ class FilterType(Enum):
     DRAMATIC = "dramatic"
     MODERN = "modern"
     NATURAL = "natural"
+    CINEMATIC = "cinematic"
+    NOIR = "noir"
+    BLEACH_BYPASS = "bleach_bypass"
+    PASTEL = "pastel"
+    CROSS_PROCESS = "cross_process"
+    CYANOTYPE = "cyanotype"
+    SUMMER = "summer"
+    AUTUMN = "autumn"
+    SOFT_FOCUS = "soft_focus"
+    HDR = "hdr"
+    INFRARED = "infrared"
 
     @property
     def label(self) -> str:
@@ -100,6 +162,17 @@ _LABELS: dict[FilterType, str] = {
     FilterType.DRAMATIC: "ドラマチック",
     FilterType.MODERN: "モダン",
     FilterType.NATURAL: "ナチュラル",
+    FilterType.CINEMATIC: "シネマティック",
+    FilterType.NOIR: "ノワール",
+    FilterType.BLEACH_BYPASS: "ブリーチバイパス",
+    FilterType.PASTEL: "パステル",
+    FilterType.CROSS_PROCESS: "クロスプロセス",
+    FilterType.CYANOTYPE: "青写真",
+    FilterType.SUMMER: "夏らしい",
+    FilterType.AUTUMN: "秋らしい",
+    FilterType.SOFT_FOCUS: "ソフトフォーカス",
+    FilterType.HDR: "HDR 風",
+    FilterType.INFRARED: "赤外線風",
 }
 
 
@@ -275,6 +348,145 @@ def natural(image: Image.Image) -> Image.Image:
     )
 
 
+def cinematic(image: Image.Image) -> Image.Image:
+    """RGB 画像をシネマティック（暗部を青緑、明部をオレンジに寄せる）にする。"""
+
+    def s_curve(x: float) -> float:
+        return (1 - CINEMATIC_CURVE) * x + CINEMATIC_CURVE * _smoothstep(x)
+
+    return _channel_curves(
+        image,
+        (
+            lambda x: s_curve(x) + CINEMATIC_SPLIT * (2 * x - 1),
+            lambda x: s_curve(x) + CINEMATIC_SHADOW_GREEN * (1 - x) ** 2,
+            lambda x: s_curve(x) - CINEMATIC_SPLIT * (2 * x - 1),
+        ),
+        CINEMATIC_SATURATION,
+    )
+
+
+def noir(image: Image.Image) -> Image.Image:
+    """RGB 画像をノワール（コントラストの強い白黒、深い黒）にする。"""
+
+    def curve(x: float) -> float:
+        once = _smoothstep(x)
+        return ((1 - NOIR_CURVE) * once + NOIR_CURVE * _smoothstep(once)) ** NOIR_GAMMA
+
+    gray = ImageOps.grayscale(image).point(_clip_table([curve(v / 255) * 255 for v in range(256)]))
+    return gray.convert("RGB")
+
+
+def bleach_bypass(image: Image.Image) -> Image.Image:
+    """RGB 画像をブリーチバイパス（色を抜いて明暗を強く、ざらっと）にする。"""
+    toned = _tone(
+        image,
+        lambda x: (1 - BLEACH_CURVE) * x + BLEACH_CURVE * _smoothstep(x),
+        saturation=BLEACH_SATURATION,
+    )
+    return add_grain(toned, BLEACH_GRAIN, BLEACH_GRAIN_SEED)
+
+
+def pastel(image: Image.Image) -> Image.Image:
+    """RGB 画像をパステル（淡く明るく、色を柔らかく）にする。"""
+    black = PASTEL_BLACK / 255
+    return _tone(
+        image,
+        lambda x: black + (1 - black) * x**PASTEL_GAMMA,
+        PASTEL_TINT,
+        PASTEL_SATURATION,
+    )
+
+
+def cross_process(image: Image.Image) -> Image.Image:
+    """RGB 画像をクロスプロセス（暗部を青紫、明部を黄緑に偏らせた派手な色）にする。"""
+    low, high = CROSS_BLUE_RANGE
+    return _channel_curves(
+        image,
+        (
+            lambda x: (1 - CROSS_RED_CURVE) * x + CROSS_RED_CURVE * _smoothstep(x),
+            lambda x: x**CROSS_GREEN_GAMMA,
+            lambda x: low + (high - low) * x,
+        ),
+        CROSS_SATURATION,
+    )
+
+
+def cyanotype(image: Image.Image) -> Image.Image:
+    """RGB 画像を青写真（明るさを濃紺〜淡い水色で表す）にする。"""
+    return ImageOps.colorize(ImageOps.grayscale(image), CYANOTYPE_DARK, CYANOTYPE_LIGHT)
+
+
+def summer(image: Image.Image) -> Image.Image:
+    """RGB 画像を夏らしく（明るく、青と緑を爽やかに）する。"""
+    return _tone(image, lambda x: x**SUMMER_GAMMA, SUMMER_TINT, SUMMER_SATURATION)
+
+
+def autumn(image: Image.Image) -> Image.Image:
+    """RGB 画像を秋らしく（暖かく落ち着いた色に）する。"""
+    return _tone(
+        image,
+        lambda x: ((1 - AUTUMN_CURVE) * x + AUTUMN_CURVE * _smoothstep(x)) ** AUTUMN_GAMMA,
+        AUTUMN_TINT,
+        AUTUMN_SATURATION,
+    )
+
+
+def soft_focus(image: Image.Image) -> Image.Image:
+    """RGB 画像をソフトフォーカス（明るい部分がにじみ、光があふれたような柔らかさ）にする。
+
+    ぼかしの大きさは短辺に比例させるので、縮小プレビューと原寸で見た目がそろう。
+    """
+    blurred = image.filter(ImageFilter.GaussianBlur(_radius(image, SOFT_RADIUS_RATIO)))
+    threshold = SOFT_GLOW_THRESHOLD
+    glow_curve = [
+        max(0.0, (v / 255 - threshold) / (1 - threshold)) * 255 * SOFT_GLOW_STRENGTH
+        for v in range(256)
+    ]
+    glow = blurred.point(_clip_table(glow_curve) * 3)
+    return ImageChops.screen(Image.blend(image, blurred, SOFT_BLUR_MIX), glow)
+
+
+def hdr(image: Image.Image) -> Image.Image:
+    """RGB 画像を HDR 風（暗部と明部の細部を強調し、くっきり）にする。
+
+    大きな半径のアンシャープマスクで部分ごとの明暗差を強め、暗部を持ち上げる。
+    半径は短辺に比例させるので、縮小プレビューと原寸で見た目がそろう。
+    """
+    detailed = image.filter(
+        ImageFilter.UnsharpMask(
+            radius=_radius(image, HDR_RADIUS_RATIO), percent=HDR_DETAIL_PERCENT, threshold=0
+        )
+    )
+    return _tone(detailed, lambda x: x**HDR_GAMMA, saturation=HDR_SATURATION)
+
+
+def infrared(image: Image.Image) -> Image.Image:
+    """RGB 画像を赤外線風（緑の草木が白く光り、空が暗い、非現実的な色）にする。"""
+    brightness = image.convert("L", INFRARED_WEIGHTS)
+    brightness = brightness.point(
+        _clip_table([(v / 255) ** INFRARED_GAMMA * 255 for v in range(256)])
+    )
+    red, green, blue = image.split()
+    swapped = Image.merge("RGB", (blue, green, red))  # R と B を入れ替えた非現実的な色
+    return Image.blend(Image.merge("RGB", (brightness,) * 3), swapped, INFRARED_COLOR_MIX)
+
+
+def _radius(image: Image.Image, ratio: float) -> float:
+    return max(1.0, min(image.size) * ratio)
+
+
+def _channel_curves(
+    image: Image.Image,
+    curves: tuple[Callable[[float], float], Callable[[float], float], Callable[[float], float]],
+    saturation: float = 1.0,
+) -> Image.Image:
+    """彩度を変えてから、R / G / B それぞれのトーンカーブ (0〜1 → 0〜1) を 1 回の LUT でかける。"""
+    if saturation != 1.0:
+        image = ImageEnhance.Color(image).enhance(saturation)
+    table = [curve(v / 255) * 255 for curve in curves for v in range(256)]
+    return image.point(_clip_table(table))
+
+
 def _tone(
     image: Image.Image,
     curve: Callable[[float], float],
@@ -337,4 +549,15 @@ _RGB_FILTERS: dict[FilterType, Callable[[Image.Image], Image.Image]] = {
     FilterType.DRAMATIC: dramatic,
     FilterType.MODERN: modern,
     FilterType.NATURAL: natural,
+    FilterType.CINEMATIC: cinematic,
+    FilterType.NOIR: noir,
+    FilterType.BLEACH_BYPASS: bleach_bypass,
+    FilterType.PASTEL: pastel,
+    FilterType.CROSS_PROCESS: cross_process,
+    FilterType.CYANOTYPE: cyanotype,
+    FilterType.SUMMER: summer,
+    FilterType.AUTUMN: autumn,
+    FilterType.SOFT_FOCUS: soft_focus,
+    FilterType.HDR: hdr,
+    FilterType.INFRARED: infrared,
 }

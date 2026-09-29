@@ -319,7 +319,7 @@ def test_preview_looks_like_full_result(filter_type):
     full = apply_edits(original, settings).resize(small.size, Image.Resampling.LANCZOS)
 
     assert abs(small.width - full.width) <= 1 and abs(small.height - full.height) <= 1
-    if filter_type is FilterType.RETRO_CAMERA:
+    if filter_type in (FilterType.RETRO_CAMERA, FilterType.BLEACH_BYPASS):
         # 粒子の模様は解像度ごとに異なるので、ぼかして色の傾向だけを比べる
         small, full = (im.filter(ImageFilter.GaussianBlur(3)) for im in (small, full))
     diff = ImageChops.difference(small, full)

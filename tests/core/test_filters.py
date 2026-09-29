@@ -45,6 +45,17 @@ def test_filter_labels():
         "ドラマチック",
         "モダン",
         "ナチュラル",
+        "シネマティック",
+        "ノワール",
+        "ブリーチバイパス",
+        "パステル",
+        "クロスプロセス",
+        "青写真",
+        "夏らしい",
+        "秋らしい",
+        "ソフトフォーカス",
+        "HDR 風",
+        "赤外線風",
     ]
 
 
@@ -403,6 +414,144 @@ def test_natural_is_subtle():
     ],
 )
 def test_new_tastes_keep_size_and_mode(filter_type):
+    image = tones()
+    result = apply_filter(image, filter_type)
+    assert result.size == image.size and result.mode == "RGB"
+
+
+# --- シネマティック〜赤外線風 ------------------------------------------------------
+
+
+def apply(filter_type: FilterType, image: Image.Image | None = None) -> Image.Image:
+    return apply_filter(tones() if image is None else image, filter_type)
+
+
+def gray_at(result: Image.Image, index: int) -> tuple[int, int, int]:
+    """index 番目の灰色の帯（0: 黒 〜 4: 白）の色。"""
+    return result.getpixel((index * 20 + 10, 20))
+
+
+def test_cinematic_teal_shadows_orange_highlights():
+    result = apply(FilterType.CINEMATIC)
+    r, g, b = gray_at(result, 1)  # 暗い灰色
+    assert b > r and g > r  # 青緑
+    r, _, b = gray_at(result, 3)  # 明るい灰色
+    assert r > b  # オレンジ
+
+
+def test_noir_is_harder_black_and_white_than_monotone():
+    noir = apply(FilterType.NOIR)
+    mono = apply(FilterType.MONOTONE)
+    for index in range(5):
+        r, g, b = gray_at(noir, index)
+        assert r == g == b
+    assert gray_at(noir, 1)[0] < gray_at(mono, 1)[0] - 20  # 黒が深い
+    assert gray_at(noir, 2)[0] < gray_at(mono, 2)[0]
+    assert color_saturation(noir) == 0
+
+
+def test_bleach_bypass_is_desaturated_contrasty_and_grainy():
+    image = tones()
+    result = apply(FilterType.BLEACH_BYPASS, image)
+    assert color_saturation(result) < color_saturation(image) * 0.6
+    assert ImageStat.Stat(result.crop((20, 0, 40, 40))).mean[1] < 64 - 10
+    assert ImageStat.Stat(result.crop((60, 0, 80, 40))).mean[1] > 192 + 10
+    flat = apply(FilterType.BLEACH_BYPASS, Image.new("RGB", (64, 64), (128,) * 3))
+    assert ImageStat.Stat(flat).stddev[1] > 1  # 粒子
+    assert apply(FilterType.BLEACH_BYPASS, image).tobytes() == result.tobytes()  # 毎回同じ
+
+
+def test_pastel_is_light_and_soft():
+    image = tones()
+    result = apply(FilterType.PASTEL, image)
+    assert gray_at(result, 0)[1] >= 60  # 黒が大きく浮く
+    assert luma(result) > luma(image) + 30
+    assert color_saturation(result) < color_saturation(image)
+
+
+def test_cross_process_shifts_colors():
+    result = apply(FilterType.CROSS_PROCESS)
+    r, _, b = gray_at(result, 1)
+    assert b > r  # 暗部は青紫
+    r, g, b = gray_at(result, 3)
+    assert r > b and g > b  # 明部は黄〜緑
+    assert gray_at(result, 4)[2] < 200  # 白も青が抜けて黄色っぽい
+
+
+def test_cyanotype_is_blue_monochrome():
+    result = apply(FilterType.CYANOTYPE)
+    assert gray_at(result, 0) == (10, 35, 80)
+    assert gray_at(result, 4) == (220, 236, 248)
+    for x in range(0, 200, 10):
+        r, g, b = result.getpixel((x, 20))
+        assert b >= g >= r  # どこも青系
+
+
+def test_summer_is_bright_fresh_and_vivid():
+    image = tones()
+    result = apply(FilterType.SUMMER, image)
+    assert luma(result) > luma(image)
+    assert color_saturation(result) > color_saturation(image)
+    r, _, b = gray_at(result, 2)
+    assert b > r
+
+
+def test_autumn_is_warm():
+    image = tones()
+    result = apply(FilterType.AUTUMN, image)
+    r, _, b = gray_at(result, 2)
+    assert r > b + 20
+    assert abs(luma(result) - luma(image)) < 15  # 落ち着いた明るさ
+
+
+def edge_image() -> Image.Image:
+    """左半分が黒、右半分が白の 200x100 画像。"""
+    image = Image.new("RGB", (200, 100), (0, 0, 0))
+    image.paste((255, 255, 255), (100, 0, 200, 100))
+    return image
+
+
+def test_soft_focus_glows_around_highlights():
+    # 800x400 ではぼかしの半径は短辺の 1.5% = 6px
+    result = apply(FilterType.SOFT_FOCUS, edge_image().resize((800, 400)))
+    assert result.getpixel((394, 200))[1] > 10  # 白の光が黒の側に 6px ほどにじむ
+    assert result.getpixel((350, 200))[1] < 5  # 離れた黒はそのまま
+    assert result.getpixel((600, 200)) == (255, 255, 255)
+
+
+def test_soft_focus_radius_scales_with_image():
+    small = apply(FilterType.SOFT_FOCUS, edge_image().resize((800, 400)))
+    large = apply(FilterType.SOFT_FOCUS, edge_image().resize((1600, 800)))
+    # 2 倍の画像では 2 倍の距離で同じくらいにじむ（縮小プレビューと原寸で見た目がそろう）
+    assert abs(small.getpixel((394, 200))[1] - large.getpixel((788, 400))[1]) <= 6
+
+
+def test_hdr_enhances_local_contrast_and_lifts_shadows():
+    image = Image.new("RGB", (200, 100), (60, 60, 60))
+    image.paste((180, 180, 180), (100, 0, 200, 100))
+    result = apply(FilterType.HDR, image)
+    near_dark, far_dark = result.getpixel((97, 50))[1], result.getpixel((5, 50))[1]
+    assert near_dark < far_dark  # 境目の暗い側がより暗く（細部の明暗差が強まる）
+    assert far_dark > 60  # 暗部は持ち上がる
+
+
+def test_infrared_makes_foliage_glow_and_sky_dark():
+    image = Image.new("RGB", (2, 1))
+    image.putpixel((0, 0), (60, 160, 60))  # 草木
+    image.putpixel((1, 0), (90, 160, 235))  # 青空
+    result = apply(FilterType.INFRARED, image).convert("L")
+    assert result.getpixel((0, 0)) > 170
+    assert result.getpixel((1, 0)) < 110
+
+
+@pytest.mark.parametrize(
+    "filter_type",
+    [getattr(FilterType, name) for name in (
+        "CINEMATIC", "NOIR", "BLEACH_BYPASS", "PASTEL", "CROSS_PROCESS", "CYANOTYPE",
+        "SUMMER", "AUTUMN", "SOFT_FOCUS", "HDR", "INFRARED",
+    )],
+)  # fmt: skip
+def test_more_tastes_keep_size_and_mode(filter_type):
     image = tones()
     result = apply_filter(image, filter_type)
     assert result.size == image.size and result.mode == "RGB"
