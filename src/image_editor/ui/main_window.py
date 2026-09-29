@@ -1,5 +1,6 @@
 """メインウィンドウ。"""
 
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -55,9 +56,32 @@ DISCARD_QUESTION = "保存していない変更があります。破棄してよ
 AUTO_PREVIEW_DELAY_MS = 300
 
 
+SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
+
+
 def default_save_path(path: Path) -> Path:
-    """保存ダイアログの初期パス `<元の名前>_edited.<元の拡張子>` を返す。"""
-    return path.with_name(f"{path.stem}_edited{path.suffix}")
+    """保存ダイアログの初期パス `<元の名前>_edited.<元の拡張子>` を返す。
+
+    すでにあれば `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
+    """
+    candidate = path.with_name(f"{path.stem}_edited{path.suffix}")
+    number = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_edited_{number}{path.suffix}")
+        number += 1
+    return candidate
+
+
+def is_same_file(a: Path, b: Path) -> bool:
+    """2 つのパスが同じファイルを指すかを返す。
+
+    macOS のファイルシステムは大文字・小文字を区別しないので、実在するファイルは
+    os.path.samefile で判定し、まだ無いファイルは絶対パスを大文字・小文字を無視して比べる。
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return str(a.resolve()).casefold() == str(b.resolve()).casefold()
 
 
 class MainWindow(QMainWindow):
@@ -237,25 +261,30 @@ class MainWindow(QMainWindow):
         if self.loaded is None:
             return
         selected_filter = SAVE_DIALOG_FILTERS.get(self.loaded.format, "")
-        path_text, chosen_filter = QFileDialog.getSaveFileName(
-            self,
-            "保存",
-            str(default_save_path(self.loaded.path)),
-            ";;".join(SAVE_DIALOG_FILTERS.values()),
-            selected_filter,
-        )
-        if not path_text:
-            return
-        path = Path(path_text)
-        if not path.suffix:
-            path = path.with_suffix(_first_extension(chosen_filter or selected_filter))
-        if not is_supported(path):
-            self._show_error(
-                "保存できません",
-                f"対応していない拡張子です: {path.suffix}",
-                with_formats=True,
+        # 元の画像と同じファイルが選ばれたら、通知してダイアログを開き直す
+        while True:
+            path_text, chosen_filter = QFileDialog.getSaveFileName(
+                self,
+                "保存",
+                str(default_save_path(self.loaded.path)),
+                ";;".join(SAVE_DIALOG_FILTERS.values()),
+                selected_filter,
             )
-            return
+            if not path_text:
+                return
+            path = Path(path_text)
+            if not path.suffix:
+                path = path.with_suffix(_first_extension(chosen_filter or selected_filter))
+            if not is_supported(path):
+                self._show_error(
+                    "保存できません",
+                    f"対応していない拡張子です: {path.suffix}",
+                    with_formats=True,
+                )
+                return
+            if not is_same_file(path, self.loaded.path):
+                break
+            self._show_error("保存できません", SAME_FILE_MESSAGE)
         self.save_to(path)
 
     def save_to(self, path: Path) -> bool:
@@ -265,6 +294,10 @@ class MainWindow(QMainWindow):
         処理中はボタンを無効化する。
         """
         if self.loaded is None or self.is_saving():
+            return False
+        if is_same_file(path, self.loaded.path):
+            # 元の画像は上書きしない
+            self._show_error("保存できません", SAME_FILE_MESSAGE)
             return False
         self._saving_settings = self.settings_panel.settings()
         task = SaveTask(self.loaded.image, self._saving_settings, path)
