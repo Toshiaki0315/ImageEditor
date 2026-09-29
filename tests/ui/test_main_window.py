@@ -11,7 +11,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.io import load_image
 from image_editor.core.transform import CropRect
 from image_editor.ui.crop_overlay import image_to_widget
-from image_editor.ui.main_window import MainWindow, default_save_path
+from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
 
 
 def test_window_opens(qtbot):
@@ -991,3 +991,86 @@ def test_settings_panel_does_not_scroll_in_large_window(window, qtbot):
     window.resize(1200, 900)
     qtbot.wait(50)
     assert window.settings_scroll.verticalScrollBar().maximum() == 0
+
+
+# --- 元の画像とは違うファイル名で保存する -----------------------------------------
+
+
+def test_default_save_path_avoids_existing_files(tmp_path):
+    original = tmp_path / "photo.jpg"
+    assert default_save_path(original) == tmp_path / "photo_edited.jpg"
+
+    (tmp_path / "photo_edited.jpg").write_bytes(b"x")
+    assert default_save_path(original) == tmp_path / "photo_edited_2.jpg"
+
+    (tmp_path / "photo_edited_2.jpg").write_bytes(b"x")
+    assert default_save_path(original) == tmp_path / "photo_edited_3.jpg"
+
+
+def test_is_same_file(tmp_path):
+    original = tmp_path / "photo.png"
+    original.write_bytes(b"x")
+
+    assert is_same_file(original, tmp_path / "photo.png")
+    assert is_same_file(original, tmp_path / "sub" / ".." / "photo.png")
+    assert is_same_file(original, tmp_path / "PHOTO.PNG")  # 大文字・小文字の違い
+    assert not is_same_file(original, tmp_path / "photo.jpg")  # 拡張子が違えば別
+    assert not is_same_file(original, tmp_path / "photo_edited.png")
+
+
+def test_save_dialog_rejects_original_file_and_reopens(
+    loaded_window, qtbot, tmp_path, warnings, monkeypatch
+):
+    original = loaded_window.loaded.path
+    before = original.read_bytes()
+    answers = iter([str(original), str(original.with_name("PHOTO.PNG")), ""])
+    calls = []
+
+    def fake_dialog(parent, caption, directory, filters, selected):
+        calls.append(directory)
+        return next(answers), selected
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_dialog)
+
+    loaded_window.settings_panel.save_button.click()
+
+    # 元のファイル、大文字・小文字違いのファイルはどちらも断られ、そのたびにダイアログが開き直される
+    assert len(calls) == 3
+    assert [title for title, _ in warnings] == ["保存できません", "保存できません"]
+    assert "元の画像と同じファイル" in warnings[0][1]
+    assert not loaded_window.is_saving()
+    assert original.read_bytes() == before
+
+
+def test_save_dialog_accepts_other_name_after_rejection(
+    loaded_window, qtbot, tmp_path, warnings, monkeypatch
+):
+    original = loaded_window.loaded.path
+    other = tmp_path / "edited.png"
+    answers = iter([str(original), str(other)])
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (next(answers), args[-1]))
+
+    with qtbot.waitSignal(loaded_window.save_finished, timeout=10000):
+        loaded_window.save_action.trigger()
+
+    assert other.exists()
+    assert len(warnings) == 1
+
+
+def test_save_with_other_extension_is_allowed(loaded_window, qtbot, tmp_path, warnings):
+    other = loaded_window.loaded.path.with_suffix(".jpg")  # photo.png → photo.jpg
+    save_and_wait(qtbot, loaded_window, other)
+    assert other.exists()
+    assert warnings == []
+
+
+def test_save_to_refuses_original_file(loaded_window, warnings):
+    original = loaded_window.loaded.path
+    before = original.read_bytes()
+    loaded_window.settings_panel.width_spin.setValue(100)
+
+    assert not loaded_window.save_to(original)
+
+    assert not loaded_window.is_saving()
+    assert original.read_bytes() == before
+    assert len(warnings) == 1
