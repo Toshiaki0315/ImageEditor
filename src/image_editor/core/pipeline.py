@@ -32,6 +32,9 @@ class EditSettings:
     brightness: int = 0  # 明るさ -100〜+100（0 = 変化なし）
     contrast: int = 0  # コントラスト -100〜+100（0 = 変化なし）
     exposure: float = 0.0  # 露出 -5.0〜+5.0 EV（0 = 変化なし）
+    sharpen: int = 0  # シャープ 0〜100（0 = なし）
+    blur: int = 0  # ぼかし 0〜100（0 = なし）
+    denoise: int = 0  # ノイズ除去 0〜100（0 = なし）
     frame: FrameType = FrameType.NONE
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = shapes.CORNER_RADIUS_DEFAULT  # 角丸の半径（短辺に対する % 0〜50）
@@ -54,8 +57,8 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     if size != image.size:
         image = transform.resize(image, size)
 
-    # 写真アプリの基本補正と同じく、露出〜彩度はフィルターの前に整える
-    image = _apply_basic_adjustments(image, settings)
+    # 写真アプリの基本補正と同じく、露出〜彩度・ディテールはフィルターの前に整える
+    image = _apply_detail(_apply_basic_adjustments(image, settings), settings)
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
     image = filters.apply_filter(image, settings.filter)
     if settings.vignette:
@@ -86,7 +89,11 @@ def render_preview(
     image = settings.orientation.transpose(image)
     scaled = scale_settings(settings, factor)
     rect = effective_crop(image.size, scaled.crop, scaled.frame, scaled.shape)
-    rendered = filters.apply_filter(_apply_basic_adjustments(image, settings), settings.filter)
+    # ディテールの半径は、保存時と同じく実際に切り抜く範囲（なければ全体）の短辺を基準にする
+    reference = min(rect.width, rect.height) if rect is not None else min(image.size)
+    output = _saved_photo_short_side(image.size, settings, factor)
+    adjusted = _apply_detail(_apply_basic_adjustments(image, settings), settings, reference, output)
+    rendered = filters.apply_filter(adjusted, settings.filter)
     if trimmed and rect is not None:
         rendered = transform.crop(rendered, rect)
         rect = None
@@ -199,6 +206,40 @@ def _apply_shape_and_frame(image: Image.Image, settings: EditSettings) -> Image.
     if has_frame:
         image = frames.add_frame(image, settings.frame)
     return image
+
+
+def _apply_detail(
+    image: Image.Image,
+    settings: EditSettings,
+    reference: float | None = None,
+    output: float | None = None,
+) -> Image.Image:
+    """ディテール（ノイズ除去 → ぼかし → シャープ）をかける。変化がなければ入力をそのまま返す。
+
+    半径は reference（省略時は画像の短辺）に比例させる。output は保存する写真の短辺で、
+    縮小プレビューでシャープの半径の下限を保存時と同じ効き方に換算するのに使う。
+    """
+    if settings.denoise:
+        image = effects.denoise(image, settings.denoise, reference)
+    if settings.blur:
+        image = effects.blur(image, settings.blur, reference)
+    if settings.sharpen:
+        image = effects.sharpen(image, settings.sharpen, reference, output)
+    return image
+
+
+def _saved_photo_short_side(
+    preview_size: tuple[int, int], settings: EditSettings, factor: float
+) -> float:
+    """保存する写真（切り抜き・リサイズ後、フレームを付ける前）の短辺を、プレビューから求める。
+
+    preview_size は回転・反転した後のプレビューの大きさ、factor は原画像に対する縮小率。
+    """
+    original = (round(preview_size[0] / factor), round(preview_size[1] / factor))
+    rect = effective_crop(original, settings.crop, settings.frame, settings.shape)
+    size = (rect.width, rect.height) if rect is not None else original
+    size = transform.fit_size(size, settings.width, settings.height, settings.keep_aspect)
+    return min(size)
 
 
 def _apply_basic_adjustments(image: Image.Image, settings: EditSettings) -> Image.Image:

@@ -25,7 +25,8 @@ class PresetError(Exception):
 class Preset:
     """名前付きの加工の組み合わせ。
 
-    テイスト・色の調整・フレーム・形を持つ。サイズ変更・トリミング・回転は画像ごとの
+    テイスト・色の調整・ディテール（シャープ・ぼかし・ノイズ除去）・フレーム・形を持つ。
+    サイズ変更・トリミング・回転は画像ごとの
     設定なので含めない。
     """
 
@@ -38,6 +39,9 @@ class Preset:
     saturation: int = 0
     vignette: int = 0
     aging: int = 0
+    sharpen: int = 0
+    blur: int = 0
+    denoise: int = 0
     frame: FrameType = FrameType.NONE
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = EditSettings.corner_radius

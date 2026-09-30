@@ -2154,3 +2154,40 @@ def test_batch_dialog_cancel_does_nothing(window, monkeypatch):
     monkeypatch.setattr(BatchDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
     window.batch_dialog()
     assert not window.is_batch_running()
+
+
+# --- ディテール --------------------------------------------------------------------
+
+
+def test_detail_updates_preview(loaded_window, qtbot):
+    before = loaded_window.drop_area._source.pixelColor(200, 150).getRgb()
+    # 左半分が赤、右半分が青の境目がぼける
+    loaded_window.settings_panel.blur_slider.setValue(100)
+
+    qtbot.waitUntil(
+        lambda: loaded_window.drop_area._source.pixelColor(199, 150).getRgb() != before,
+        timeout=2000,
+    )
+
+
+def test_detail_expanded_is_remembered(qtbot, preferences):
+    first = MainWindow()
+    qtbot.addWidget(first)
+    # 画像を開いていないとボタンは押せないので、状態を直接切り替える（押したときと同じ通知が出る）
+    first.settings_panel.detail_toggle.setChecked(True)
+
+    second = MainWindow()
+    qtbot.addWidget(second)
+    assert second.settings_panel.is_detail_expanded()
+
+
+def test_saved_image_has_detail(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.blur_slider.setValue(100)
+    out = tmp_path / "blur.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image
+    # 境目 (x = 200) の近くが赤と青の中間の色になる
+    r, _, b = saved.getpixel((199, 150))
+    assert 40 < r < 220 and 30 < b < 200
