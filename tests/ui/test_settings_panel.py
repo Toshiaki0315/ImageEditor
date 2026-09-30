@@ -5,6 +5,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import SaveOptions
 from image_editor.core.pipeline import EditSettings
+from image_editor.core.presets import Preset
 from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
 from image_editor.core.transform import AspectRatio, CropRect, Orientation, OrientOp
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
@@ -1269,3 +1270,112 @@ def test_compare_button_disabled_without_image(qtbot):
     widget = SettingsPanel()
     qtbot.addWidget(widget)
     assert not widget.compare_button.isEnabled()
+
+
+# --- プリセット -------------------------------------------------------------------
+
+CINEMA = Preset(
+    name="映画風",
+    filter=FilterType.CINEMATIC,
+    exposure=0.5,
+    brightness=10,
+    contrast=-20,
+    temperature=5200,
+    saturation=30,
+    vignette=40,
+    aging=15,
+    frame=FrameType.POLAROID,
+    shape=ShapeType.ROUNDED,
+    corner_radius=25,
+)
+
+
+def menu_texts(menu):
+    return [a.text() for a in menu.actions() if not a.isSeparator()]
+
+
+def test_preset_menu_without_presets(panel):
+    assert panel.preset_button.text() == "プリセット"
+    menu = panel.preset_menu
+    assert menu_texts(menu) == [
+        "（保存したプリセットはありません）",
+        "今の加工をプリセットとして保存…",
+        "削除",
+    ]
+    assert not menu.actions()[0].isEnabled()
+    delete = [a for a in menu.actions() if a.text() == "削除"][0]
+    assert not delete.isEnabled()
+
+
+def test_preset_menu_lists_presets(panel):
+    panel.set_presets([CINEMA, Preset(name="白黒")])
+
+    menu = panel.preset_menu
+    assert menu_texts(menu)[:2] == ["映画風", "白黒"]
+    delete = [a for a in menu.actions() if a.text() == "削除"][0]
+    assert delete.isEnabled()
+    assert menu_texts(delete.menu()) == ["映画風", "白黒"]
+    assert panel.presets() == [CINEMA, Preset(name="白黒")]
+
+
+def test_apply_preset_from_menu(panel, qtbot):
+    panel.set_crop(CropRect(0, 0, 400, 300))
+    panel.width_spin.setValue(200)
+    panel.rotate_right_button.click()
+    before = panel.settings()
+    panel.set_presets([CINEMA])
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.preset_menu.actions()[0].trigger()
+
+    settings = blocker.args[0]
+    for key in ("filter", "exposure", "brightness", "contrast", "temperature"):
+        assert getattr(settings, key) == getattr(CINEMA, key)
+    assert (settings.saturation, settings.vignette, settings.aging) == (30, 40, 15)
+    assert (settings.frame, settings.shape, settings.corner_radius) == (
+        FrameType.POLAROID,
+        ShapeType.ROUNDED,
+        25,
+    )
+    # 向きは残す。範囲はフレーム（ポラロイド = 正方形）の比に直る
+    assert settings.orientation == before.orientation
+    assert settings.crop is not None and settings.crop.width == settings.crop.height
+    assert panel.aspect_combo.currentText() == "フレーム・円に合わせる"
+    assert panel.corner_slider.isEnabled()
+    assert panel.exposure_value_label.text() == "+0.5 EV"
+
+
+def test_apply_preset_emits_once(panel):
+    received = []
+    panel.settings_changed.connect(received.append)
+
+    panel.apply_preset(CINEMA)
+
+    assert len(received) == 1
+
+
+def test_apply_preset_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    widget.apply_preset(CINEMA)
+    assert widget.settings() == EditSettings()
+
+
+def test_preset_save_and_delete_signals(panel, qtbot):
+    panel.set_presets([CINEMA])
+    menu = panel.preset_menu
+    save = [a for a in menu.actions() if a.text().startswith("今の加工")][0]
+    delete = [a for a in menu.actions() if a.text() == "削除"][0]
+
+    with qtbot.waitSignal(panel.preset_save_requested):
+        save.trigger()
+    with qtbot.waitSignal(panel.preset_delete_requested) as blocker:
+        delete.menu().actions()[0].trigger()
+
+    assert blocker.args == ["映画風"]
+
+
+def test_preset_button_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not widget.preset_button.isEnabled()
