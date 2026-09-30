@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
 
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
+from image_editor.core.frames import FrameType
 from image_editor.core.io import load_image
 from image_editor.core.transform import CropRect
 from image_editor.ui.crop_overlay import image_to_widget
@@ -263,12 +264,14 @@ def test_filter_change_updates_preview_automatically(loaded_window, qtbot):
 
 
 @pytest.mark.parametrize("filter_type", list(FilterType))
-def test_preview_keeps_whole_frame(loaded_window, filter_type):
-    # トリミング・リサイズ・ポラロイドの白枠はプレビューに反映せず、元の画角のまま表示する
+@pytest.mark.parametrize("frame", list(FrameType))
+def test_preview_keeps_whole_frame(loaded_window, filter_type, frame):
+    # トリミング・リサイズ・フレームはプレビューに反映せず、元の画角のまま表示する
     panel = loaded_window.settings_panel
     panel.set_crop(CropRect(0, 0, 100, 50))
     panel.width_spin.setValue(20)
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(filter_type))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(frame))
 
     loaded_window.update_preview()
 
@@ -280,10 +283,10 @@ def test_preview_keeps_whole_frame(loaded_window, filter_type):
 def test_status_shows_output_size(loaded_window):
     panel = loaded_window.settings_panel
     panel.width_spin.setValue(200)
-    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.POLAROID))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
 
-    # 200x150 → ポラロイド枠（短辺 150 の 5% = 8、20% = 30）
-    assert loaded_window.status_label.text() == ("photo.png ｜ 原寸 400×300 px ｜ 出力 216×188 px")
+    # 正方形 300x300 に切り抜き → 200x200 → ポラロイドの余白 (11, 15, 11, 56)
+    assert loaded_window.status_label.text() == ("photo.png ｜ 原寸 400×300 px ｜ 出力 222×271 px")
 
 
 def test_default_save_path():
@@ -307,15 +310,49 @@ def test_saved_file_has_size_and_filter(loaded_window, qtbot, tmp_path, suffix):
     assert panel.save_button.isEnabled()  # 処理後にボタンが戻る
 
 
-def test_save_polaroid_output_size(loaded_window, qtbot, tmp_path):
+def test_save_polaroid_frame_output_size(loaded_window, qtbot, tmp_path):
     panel = loaded_window.settings_panel
     panel.set_crop(CropRect(0, 0, 200, 200))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    out = tmp_path / "out.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    assert load_image(out).image.size == (200 + 11 * 2, 200 + 15 + 56)
+
+
+@pytest.mark.parametrize("filter_type", [FilterType.POLAROID, FilterType.SEPIA])
+def test_save_frame_with_any_filter(loaded_window, qtbot, tmp_path, filter_type):
+    panel = loaded_window.settings_panel
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(filter_type))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.INSTAX_MINI))
+    out = tmp_path / "out.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image.convert("RGB")
+    # 横長の写真は横向きのチェキ（写真部分 62:46 → 400x297、広い余白は右）
+    assert saved.size == loaded_window_output(loaded_window)
+    assert saved.width > saved.height
+    assert saved.getpixel((saved.width - 5, saved.height // 2)) == (255, 255, 255)
+
+
+def test_save_polaroid_filter_without_frame(loaded_window, qtbot, tmp_path):
+    panel = loaded_window.settings_panel
     panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.POLAROID))
     out = tmp_path / "out.png"
 
     save_and_wait(qtbot, loaded_window, out)
 
-    assert load_image(out).image.size == (200 + 10 * 2, 200 + 10 + 40)
+    # 「ポラロイド風」は色だけで、白枠は付かない
+    assert load_image(out).image.size == (400, 300)
+
+
+def loaded_window_output(window: MainWindow) -> tuple[int, int]:
+    from image_editor.core.pipeline import output_size
+
+    assert window.loaded is not None
+    return output_size(window.loaded.image.size, window.settings_panel.settings())
 
 
 def test_save_dialog_uses_default_name(loaded_window, qtbot, tmp_path, monkeypatch):
@@ -778,6 +815,26 @@ def test_clear_crop_returns_to_whole_view(loaded_window):
 
     assert loaded_window.drop_area._source.width() == 400
     assert loaded_window.drop_area.crop_overlay.is_active()
+
+
+def test_trim_view_shows_frame(loaded_window, qtbot):
+    # フレームだけでも「トリミング実行」で完成形（比率の切り抜き + フレーム）を確認できる
+    panel = loaded_window.settings_panel
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+
+    assert panel.trim_button.isEnabled()
+    panel.trim_button.click()
+
+    source = loaded_window.drop_area._source
+    # 400x300 → 正方形 300x300 → ポラロイドの余白 (17, 23, 17, 84)
+    assert (source.width(), source.height()) == (334, 407)
+    assert preview_pixel(loaded_window, 0, 0) == (255, 255, 255)
+
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.NONE))
+
+    # 範囲もフレームもなくなったら全体表示に戻る
+    assert not panel.is_trim_view()
+    assert loaded_window.drop_area._source.width() == 400
 
 
 def test_trim_view_does_not_affect_save(loaded_window, qtbot, tmp_path):

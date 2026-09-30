@@ -4,7 +4,7 @@ import sys
 import pytest
 from PIL import Image
 
-from image_editor.core.transform import CropRect, clamp_crop, crop, fit_size, resize
+from image_editor.core.transform import CropRect, clamp_crop, crop, fit_aspect, fit_size, resize
 
 # --- clamp_crop ---------------------------------------------------------------
 
@@ -47,6 +47,25 @@ def test_clamp_crop_returns_none(rect):
 
 
 # --- crop ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rect", "aspect", "expected"),
+    [
+        # 横長 → 正方形: 左右を均等に削る
+        (CropRect(0, 0, 400, 300), (1, 1), CropRect(50, 0, 300, 300)),
+        # 縦長 → 正方形: 上下を均等に削る
+        (CropRect(10, 20, 100, 301), (1, 1), CropRect(10, 120, 100, 100)),
+        # 位置はもとの範囲の中
+        (CropRect(100, 50, 200, 100), (46, 62), CropRect(163, 50, 74, 100)),
+        # すでに同じ比率なら変えない
+        (CropRect(5, 5, 46, 62), (46, 62), CropRect(5, 5, 46, 62)),
+        # 最小 1px
+        (CropRect(0, 0, 1000, 1), (1, 1000), CropRect(499, 0, 1, 1)),
+    ],
+)
+def test_fit_aspect(rect, aspect, expected):
+    assert fit_aspect(rect, aspect) == expected
 
 
 def test_crop_uses_original_coordinates():

@@ -37,6 +37,19 @@ def clamp_crop(rect: CropRect, image_size: tuple[int, int]) -> CropRect | None:
     return CropRect(left, top, right - left, bottom - top)
 
 
+def fit_aspect(rect: CropRect, aspect: tuple[float, float]) -> CropRect:
+    """範囲を縦横比 aspect (幅, 高さ) になるよう中央で切り詰めた範囲を返す。
+
+    長すぎる側だけを両端から均等に削る。端数は四捨五入し、最小 1px。
+    """
+    aspect_width, aspect_height = aspect
+    if rect.width * aspect_height > rect.height * aspect_width:
+        width = min(rect.width, max(MIN_SIZE, round(rect.height * aspect_width / aspect_height)))
+        return CropRect(rect.x + (rect.width - width) // 2, rect.y, width, rect.height)
+    height = min(rect.height, max(MIN_SIZE, round(rect.width * aspect_height / aspect_width)))
+    return CropRect(rect.x, rect.y + (rect.height - height) // 2, rect.width, height)
+
+
 def crop(image: Image.Image, rect: CropRect) -> Image.Image:
     """画像を指定範囲で切り抜く。範囲は事前に clamp_crop で補正しておくこと。"""
     return image.crop((rect.x, rect.y, rect.x + rect.width, rect.y + rect.height))

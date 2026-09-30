@@ -4,11 +4,13 @@ import sys
 import pytest
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
-from image_editor.core import filters, pipeline, transform
+from image_editor.core import filters, frames, pipeline, transform
 from image_editor.core.filters import FilterType
+from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import (
     EditSettings,
     apply_edits,
+    effective_crop,
     make_preview,
     output_size,
     render_preview,
@@ -26,6 +28,12 @@ def make_sample(mode: str = "RGB") -> Image.Image:
     image = Image.new("RGB", (400, 300), BLUE)
     image.paste(RED, (0, 0, 200, 100))
     return image.convert(mode)
+
+
+def settings_photo_size(size: tuple[int, int], frame: FrameType) -> tuple[int, int]:
+    """フレームの写真部分の比率に切り抜いた後の写真の大きさ。"""
+    rect = effective_crop(size, None, frame)
+    return (rect.width, rect.height) if rect else size
 
 
 # --- EditSettings -------------------------------------------------------------
@@ -95,15 +103,62 @@ def test_resize_uses_cropped_size_for_aspect():
     assert apply_edits(make_sample(), settings).size == (400, 100)
 
 
-def test_filter_after_resize():
-    # ポラロイドの枠はリサイズ後のサイズ基準で付く（枠自体は縮小されない）
-    settings = EditSettings(width=100, height=100, keep_aspect=False, filter=FilterType.POLAROID)
+def test_frame_after_resize():
+    # フレームはリサイズ後のサイズ基準で付く（フレーム自体は縮小されない）
+    settings = EditSettings(width=100, frame=FrameType.POLAROID)
 
     result = apply_edits(make_sample(), settings)
 
-    assert result.size == (100 + 5 * 2, 100 + 5 + 20)
+    # 400x300 → 正方形 300x300 に切り抜き → 100x100 → 余白 (6, 8, 6, 28)
+    assert result.size == (100 + 6 * 2, 100 + 8 + 28)
     assert result.getpixel((0, 0)) == WHITE
     assert result.getpixel((50, result.height - 1)) == WHITE
+
+
+def test_polaroid_filter_has_no_frame():
+    settings = EditSettings(filter=FilterType.POLAROID)
+    assert apply_edits(make_sample(), settings).size == (400, 300)
+
+
+# --- フレームの写真部分の比率への切り抜き -----------------------------------------
+
+
+def test_effective_crop_without_frame():
+    assert effective_crop((400, 300), None) is None
+    assert effective_crop((400, 300), CropRect(300, 200, 500, 500)) == CropRect(300, 200, 100, 100)
+
+
+def test_effective_crop_polaroid_is_centered_square():
+    assert effective_crop((400, 300), None, FrameType.POLAROID) == CropRect(50, 0, 300, 300)
+
+
+def test_effective_crop_instax_portrait():
+    # 縦長の写真はチェキの写真部分 46:62 に合わせ、上下を均等に削る（300 × 62 / 46 = 404.3）
+    rect = effective_crop((300, 600), None, FrameType.INSTAX_MINI)
+    assert rect == CropRect(0, 98, 300, 404)
+
+
+def test_effective_crop_instax_landscape():
+    # 横長の写真は横向きのチェキ 62:46 に合わせる
+    rect = effective_crop((600, 300), None, FrameType.INSTAX_MINI)
+    assert rect == CropRect(98, 0, 404, 300)
+
+
+def test_effective_crop_fits_trimmed_range():
+    # トリミング範囲の中央を、写真部分の比率で切り抜く
+    rect = effective_crop((400, 300), CropRect(0, 0, 200, 100), FrameType.POLAROID)
+    assert rect == CropRect(50, 0, 100, 100)
+
+
+def test_frame_crops_from_original():
+    # 400x300 の左上 200x100 が赤。トリミング範囲の中央を正方形に切り抜くので全面赤
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), frame=FrameType.POLAROID)
+
+    result = apply_edits(make_sample(), settings)
+
+    left, top, _, _ = frames.frame_margins(FrameType.POLAROID, (100, 100))
+    photo = result.crop((left, top, left + 100, top + 100))
+    assert photo.getcolors() == [(100 * 100, RED)]
 
 
 def test_crop_out_of_image_is_clamped():
@@ -132,15 +187,15 @@ SETTINGS_CASES = [
 ]
 
 
-@pytest.mark.parametrize("filter_type", list(FilterType))
+@pytest.mark.parametrize("frame", list(FrameType))
 @pytest.mark.parametrize("settings", SETTINGS_CASES)
-def test_output_size_matches_apply_edits(settings, filter_type):
+def test_output_size_matches_apply_edits(settings, frame):
     settings = EditSettings(
         crop=settings.crop,
         width=settings.width,
         height=settings.height,
         keep_aspect=settings.keep_aspect,
-        filter=filter_type,
+        frame=frame,
     )
     original = make_sample()
 
@@ -195,6 +250,7 @@ def test_scale_settings():
         height=None,
         keep_aspect=True,
         filter=FilterType.POLAROID,
+        frame=FrameType.INSTAX_MINI,
     )
 
     scaled = scale_settings(settings, 0.25)
@@ -205,6 +261,7 @@ def test_scale_settings():
         height=None,
         keep_aspect=True,
         filter=FilterType.POLAROID,
+        frame=FrameType.INSTAX_MINI,
     )
     assert settings.crop == CropRect(100, 40, 800, 600)  # 元の設定は変わらない
 
@@ -331,13 +388,16 @@ def test_preview_looks_like_full_result(filter_type):
 
 
 @pytest.mark.parametrize("filter_type", list(FilterType))
-def test_render_preview_keeps_whole_frame(filter_type):
+@pytest.mark.parametrize("frame", list(FrameType))
+def test_render_preview_keeps_whole_frame(filter_type, frame):
     image = make_sample()
-    settings = EditSettings(crop=CropRect(10, 10, 50, 50), width=20, filter=filter_type)
+    settings = EditSettings(
+        crop=CropRect(10, 10, 50, 50), width=20, filter=filter_type, frame=frame
+    )
 
     result = render_preview(image, settings)
 
-    # トリミング・リサイズ・白枠は適用しない
+    # トリミング・リサイズ・フレームは適用しない
     assert result.size == image.size
     assert result is not image
 
@@ -379,27 +439,30 @@ def test_vignette_is_relative_to_crop():
     assert result.getpixel((0, 0))[0] < 60
 
 
-def test_vignette_is_not_applied_to_polaroid_border():
+@pytest.mark.parametrize("frame", [FrameType.POLAROID, FrameType.INSTAX_MINI])
+def test_vignette_is_not_applied_to_frame(frame):
     image = Image.new("RGB", (200, 200), (200, 200, 200))
-    settings = EditSettings(vignette=100, filter=FilterType.POLAROID)
+    settings = EditSettings(vignette=100, frame=frame)
 
     result = apply_edits(image, settings)
 
-    # 白枠（上・左・右 10px、下 40px）は白のまま、写真部分の四隅は暗い
-    assert result.getpixel((0, 0)) == (255, 255, 255)
-    assert result.getpixel((110, result.height - 5)) == (255, 255, 255)
-    assert result.getpixel((10, 10))[0] < 80
+    # フレームは白のまま、写真部分の四隅は暗い
+    left, top, _, _ = frames.frame_margins(frame, settings_photo_size(image.size, frame))
+    assert result.getpixel((0, 0)) == WHITE
+    assert result.getpixel((result.width // 2, result.height - 5)) == WHITE
+    assert result.getpixel((left, top))[0] < 80
 
 
-def test_polaroid_without_vignette_is_unchanged():
+def test_frame_without_effects_keeps_filter_color():
     image = make_sample()
-    settings = EditSettings(filter=FilterType.POLAROID)
-    expected = filters.apply_filter(image, FilterType.POLAROID)
+    settings = EditSettings(filter=FilterType.POLAROID, frame=FrameType.POLAROID)
+    photo = filters.apply_filter(image.crop((50, 0, 350, 300)), FilterType.POLAROID)
+    expected = frames.add_frame(photo, FrameType.POLAROID)
     assert apply_edits(image, settings).tobytes() == expected.tobytes()
 
 
 def test_vignette_does_not_change_output_size():
-    settings = EditSettings(width=100, vignette=50, filter=FilterType.POLAROID)
+    settings = EditSettings(width=100, vignette=50, frame=FrameType.POLAROID)
     assert output_size((400, 300), settings) == apply_edits(make_sample(), settings).size
 
 
@@ -456,6 +519,41 @@ def test_render_preview_trimmed_without_crop_shows_whole():
     assert render_preview(image, EditSettings(), trimmed=True).size == image.size
 
 
+@pytest.mark.parametrize("frame", [FrameType.POLAROID, FrameType.INSTAX_MINI])
+def test_render_preview_trimmed_shows_frame(frame):
+    # 切り抜き表示では、写真部分の比率への切り抜きとフレームも反映した完成形を見せる
+    image = make_sample()
+    settings = EditSettings(crop=CropRect(0, 0, 200, 100), width=50, frame=frame)
+
+    result = render_preview(image, settings, trimmed=True)
+
+    rect = effective_crop(image.size, settings.crop, frame)
+    assert result.size == frames.framed_size((rect.width, rect.height), frame)
+    assert result.getpixel((0, 0)) == WHITE
+
+
+def test_render_preview_trimmed_frame_matches_apply_edits():
+    image = make_sample()
+    settings = EditSettings(crop=CropRect(20, 10, 300, 200), frame=FrameType.INSTAX_MINI)
+
+    preview = render_preview(image, settings, trimmed=True)
+
+    assert preview.tobytes() == apply_edits(image, settings).tobytes()
+
+
+def test_render_preview_vignette_uses_frame_window():
+    # フレームがあると、周辺減光は写真部分の比率に切り抜いた範囲（中央の正方形）を基準にする
+    image = Image.new("RGB", (400, 200), (200, 200, 200))
+    settings = EditSettings(vignette=100, frame=FrameType.POLAROID)
+
+    result = render_preview(image, settings)
+
+    assert result.size == (400, 200)
+    assert result.getpixel((200, 100))[0] == 200
+    assert result.getpixel((100, 0))[0] < 60  # 正方形 (100, 0)〜(300, 200) の左上の角
+    assert result.getpixel((50, 0))[0] == 200  # 正方形の外は暗くしない
+
+
 # --- 経年劣化 -----------------------------------------------------------------
 
 
@@ -467,15 +565,15 @@ def test_aging_is_applied():
     assert r - b > 40
 
 
-def test_aging_is_not_applied_to_polaroid_border():
+def test_aging_is_not_applied_to_frame():
     image = Image.new("RGB", (200, 200), (160, 160, 160))
-    settings = EditSettings(aging=100, filter=FilterType.POLAROID)
+    settings = EditSettings(aging=100, frame=FrameType.POLAROID)
 
     result = apply_edits(image, settings)
 
-    # 白枠（上・左・右 10px、下 40px）は白のまま、写真部分は黄ばむ
-    assert result.getpixel((0, 0)) == (255, 255, 255)
-    assert result.getpixel((110, result.height - 5)) == (255, 255, 255)
+    # フレームは白のまま、写真部分は黄ばむ
+    assert result.getpixel((0, 0)) == WHITE
+    assert result.getpixel((110, result.height - 5)) == WHITE
     r, _, b = result.getpixel((110, 110))
     assert r > b
 
@@ -488,7 +586,7 @@ def test_aging_after_vignette():
 
 
 def test_aging_does_not_change_output_size():
-    settings = EditSettings(width=100, aging=80, filter=FilterType.POLAROID)
+    settings = EditSettings(width=100, aging=80, frame=FrameType.POLAROID)
     assert output_size((400, 300), settings) == apply_edits(make_sample(), settings).size
 
 
@@ -527,10 +625,10 @@ def test_temperature_is_applied_before_filter():
     assert r == g == b
 
 
-def test_temperature_does_not_touch_polaroid_border():
+def test_temperature_does_not_touch_frame():
     image = Image.new("RGB", (200, 200), (150, 150, 150))
-    result = apply_edits(image, EditSettings(temperature=2500, filter=FilterType.POLAROID))
-    assert result.getpixel((0, 0)) == (255, 255, 255)
+    result = apply_edits(image, EditSettings(temperature=2500, frame=FrameType.POLAROID))
+    assert result.getpixel((0, 0)) == WHITE
 
 
 def test_render_preview_applies_temperature():
