@@ -30,7 +30,8 @@ from image_editor.core.pipeline import (
     render_preview,
 )
 from image_editor.ui.drop_area import DropArea
-from image_editor.ui.settings_panel import SettingsPanel
+from image_editor.ui.history import History
+from image_editor.ui.settings_panel import PanelState, SettingsPanel
 from image_editor.ui.worker import SaveTask
 
 WINDOW_TITLE = "Image Editor"
@@ -54,6 +55,8 @@ SAVE_DIALOG_FILTERS: dict[str, str] = {
 DISCARD_QUESTION = "保存していない変更があります。破棄してよろしいですか？"
 # 設定変更からプレビューを自動更新するまでの待ち時間 (FR-UI-40)
 AUTO_PREVIEW_DELAY_MS = 300
+# 設定の変更が落ち着いてから履歴に積むまでの待ち時間（続けて変えた分は 1 回の操作にまとめる）
+HISTORY_DELAY_MS = 500
 
 
 SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
@@ -114,6 +117,13 @@ class MainWindow(QMainWindow):
         self._auto_preview_timer.setSingleShot(True)
         self._auto_preview_timer.setInterval(AUTO_PREVIEW_DELAY_MS)
         self._auto_preview_timer.timeout.connect(self._auto_preview)
+        # アンドゥ／リドゥの履歴（設定パネルの状態のスナップショット）
+        self._history: History[PanelState] = History(PanelState(EditSettings()))
+        self._restoring = False
+        self._history_timer = QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.setInterval(HISTORY_DELAY_MS)
+        self._history_timer.timeout.connect(self._commit_history)
 
         self.drop_area = DropArea()
         self.drop_area.files_dropped.connect(self._on_files_dropped)
@@ -173,6 +183,18 @@ class MainWindow(QMainWindow):
         self.quit_action.triggered.connect(self.close)
         file_menu.addAction(self.quit_action)
 
+        edit_menu = self.menuBar().addMenu("編集")
+
+        self.undo_action = QAction("元に戻す", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.undo)
+        edit_menu.addAction(self.undo_action)
+
+        self.redo_action = QAction("やり直す", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.redo)
+        edit_menu.addAction(self.redo_action)
+
     # --- 読み込み -------------------------------------------------------------
 
     def open_file_dialog(self) -> None:
@@ -215,6 +237,7 @@ class MainWindow(QMainWindow):
         self._auto_preview_timer.stop()
         self.drop_area.set_image(self._preview)
         self._rendered_key = self._preview_key(self.settings_panel.settings())
+        self._reset_history()
         # macOS のタイトルバーにファイル名と、クリックで場所を示すアイコンを出す
         self.setWindowTitle(f"{path.name} — {WINDOW_TITLE}")
         self.setWindowFilePath(str(path))
@@ -348,7 +371,57 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.setWindowFilePath("")
         self.settings_panel.set_image_size(None)
+        self._reset_history()
         self._update_status()
+        self._update_actions()
+
+    # --- アンドゥ／リドゥ -----------------------------------------------------
+
+    def undo(self) -> None:
+        """設定の変更を 1 つ元に戻す（まだ履歴に積んでいない変更があれば、それを戻す）。"""
+        if self.loaded is None or self.is_saving():
+            return
+        self._commit_history(force=True)
+        if self._history.can_undo():
+            self._restore_history(self._history.undo())
+
+    def redo(self) -> None:
+        """元に戻した変更を 1 つやり直す。"""
+        if self.loaded is None or self.is_saving():
+            return
+        self._commit_history(force=True)
+        if self._history.can_redo():
+            self._restore_history(self._history.redo())
+
+    def _commit_history(self, force: bool = False) -> None:
+        """今の状態を履歴に積む。
+
+        スライダーや範囲をドラッグしている間は待つ（ドラッグ全体を 1 回の操作にする）。
+        force なら待たずに積む。
+        """
+        self._history_timer.stop()
+        if self.loaded is None:
+            return
+        dragging = self.settings_panel.is_adjusting() or self.drop_area.crop_overlay.is_dragging()
+        if dragging and not force:
+            self._history_timer.start()
+            return
+        self._history.push(self.settings_panel.snapshot())
+        self._update_actions()
+
+    def _restore_history(self, state: PanelState) -> None:
+        self._restoring = True
+        try:
+            self.settings_panel.restore(state)
+        finally:
+            self._restoring = False
+        self._history_timer.stop()
+        self._update_actions()
+
+    def _reset_history(self) -> None:
+        """履歴を消して、今の状態を始まりにする（画像の読み込み・リセット時）。"""
+        self._history_timer.stop()
+        self._history.reset(self.settings_panel.snapshot())
         self._update_actions()
 
     def has_unsaved_changes(self) -> bool:
@@ -361,6 +434,10 @@ class MainWindow(QMainWindow):
     # --- 内部 -----------------------------------------------------------------
 
     def _on_settings_changed(self, settings: EditSettings) -> None:
+        if self.loaded is not None and not self._restoring:
+            # 続けて変えた分は、落ち着いてから 1 回の操作として履歴に積む
+            self._history_timer.start()
+            self._update_actions()
         overlay = self.drop_area.crop_overlay
         overlay.set_aspect(*self.settings_panel.crop_aspect())
         # 回転・反転で画像の向きが変わったら、範囲選択の座標系も合わせる
@@ -455,6 +532,12 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(enabled)
         self.open_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
+        # まだ履歴に積んでいない変更があれば、それを元に戻せる
+        pending = self.loaded is not None and (
+            self.settings_panel.snapshot() != self._history.current()
+        )
+        self.undo_action.setEnabled(enabled and (self._history.can_undo() or pending))
+        self.redo_action.setEnabled(enabled and self._history.can_redo() and not pending)
 
     def _set_busy(self, busy: bool) -> None:
         self.settings_panel.set_busy(busy)

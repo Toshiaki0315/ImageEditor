@@ -10,6 +10,7 @@ from image_editor.app import create_window
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import load_image
+from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
@@ -53,7 +54,7 @@ def test_file_menu_actions(qtbot):
     qtbot.addWidget(window)
 
     menus = [a.menu() for a in window.menuBar().actions() if a.menu()]
-    assert [m.title() for m in menus] == ["ファイル"]
+    assert [m.title() for m in menus] == ["ファイル", "編集"]
     texts = [a.text() for a in menus[0].actions() if not a.isSeparator()]
     assert texts == ["開く…", "保存…", "終了"]
     assert window.open_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
@@ -1317,6 +1318,17 @@ def test_rotation_updates_preview_immediately(loaded_window):
     assert "出力 300×400 px" in loaded_window.status_label.text()
 
 
+def test_overlay_matches_preview_after_several_ops(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.rotate_right_button.click()
+    panel.flip_horizontal_button.click()
+    panel.rotate_right_button.click()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 300)
+    assert loaded_window.drop_area.crop_overlay.image_size() == (400, 300)
+
+
 def test_rotation_moves_overlay_crop(loaded_window):
     panel = loaded_window.settings_panel
     panel.set_crop(CropRect(0, 0, 100, 50))
@@ -1357,3 +1369,184 @@ def test_new_image_resets_orientation(loaded_window, tmp_path, questions):
     assert loaded_window.drop_area.crop_overlay.image_size() == (200, 100)
     source = loaded_window.drop_area._source
     assert (source.width(), source.height()) == (200, 100)
+
+
+# --- アンドゥ／リドゥ -------------------------------------------------------------
+
+
+def test_edit_menu_actions(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    edit_menu = [a.menu() for a in window.menuBar().actions() if a.menu()][1]
+    assert [a.text() for a in edit_menu.actions()] == ["元に戻す", "やり直す"]
+    assert window.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
+    assert window.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
+    assert not window.undo_action.isEnabled()
+    assert not window.redo_action.isEnabled()
+
+
+def test_undo_redo_filter_size_and_crop(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.SEPIA))
+    loaded_window._commit_history()
+    panel.width_spin.setValue(200)
+    loaded_window._commit_history()
+    panel.set_crop(CropRect(0, 0, 100, 50))
+    loaded_window._commit_history()
+    after_crop = panel.settings()
+
+    loaded_window.undo_action.trigger()
+    assert panel.settings().crop is None
+    assert panel.settings().width == 200
+
+    loaded_window.undo_action.trigger()
+    assert panel.settings().width is None
+    assert panel.settings().filter is FilterType.SEPIA
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (400, 300)
+
+    loaded_window.undo_action.trigger()
+    assert panel.settings() == EditSettings()
+    assert not loaded_window.undo_action.isEnabled()
+
+    for _ in range(3):
+        loaded_window.redo_action.trigger()
+    assert panel.settings() == after_crop
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 100, 50)
+    assert not loaded_window.redo_action.isEnabled()
+
+
+def test_undo_pending_change_immediately(loaded_window):
+    # 履歴に積む前（変更の直後）でも ⌘Z で戻せる
+    panel = loaded_window.settings_panel
+    panel.brightness_slider.setValue(40)
+    assert loaded_window.undo_action.isEnabled()
+
+    loaded_window.undo()
+
+    assert panel.brightness_slider.value() == 0
+    assert loaded_window.redo_action.isEnabled()
+    loaded_window.redo()
+    assert panel.brightness_slider.value() == 40
+
+
+def test_slider_drag_is_one_step(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    slider = panel.saturation_slider
+
+    slider.setSliderDown(True)
+    for value in range(-10, -110, -10):
+        slider.setValue(value)
+        qtbot.wait(60)
+    qtbot.wait(700)  # ドラッグ中は時間がたっても積まない
+    assert not loaded_window._history.can_undo()
+    slider.setSliderDown(False)
+    qtbot.waitUntil(lambda: loaded_window._history.can_undo(), timeout=2000)
+
+    loaded_window.undo()
+
+    # 1 回の ⌘Z でドラッグ前に戻る
+    assert slider.value() == 0
+    assert not loaded_window._history.can_undo()
+
+
+def test_quick_changes_are_grouped(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    for value in (1, 2, 3):
+        panel.contrast_slider.setValue(value)  # キーボードの矢印キーなど
+    qtbot.waitUntil(lambda: loaded_window._history.can_undo(), timeout=2000)
+
+    loaded_window.undo()
+
+    assert panel.contrast_slider.value() == 0
+
+
+def test_crop_drag_is_one_step(loaded_window, qtbot):
+    overlay = loaded_window.drop_area.crop_overlay
+    image_rect = loaded_window.drop_area.image_rect()
+
+    def to_widget(x, y):
+        point = image_to_widget(x, y, image_rect, (400, 300))
+        return QPoint(round(point.x()), round(point.y()))
+
+    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=to_widget(50, 50))
+    for x in (100, 150, 200):
+        qtbot.mouseMove(overlay, to_widget(x, 150))
+        qtbot.wait(300)
+    qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=to_widget(200, 150))
+    loaded_window._commit_history()
+
+    loaded_window.undo()
+
+    assert loaded_window.settings_panel.settings().crop is None
+    assert not loaded_window._history.can_undo()
+
+
+def test_undo_rotation(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 100, 50))
+    loaded_window._commit_history()
+    panel.rotate_right_button.click()
+
+    loaded_window.undo()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 300)
+    assert loaded_window.drop_area.crop_overlay.image_size() == (400, 300)
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 100, 50)
+
+
+def test_undo_updates_preview(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.saturation_slider.setValue(-100)
+    loaded_window.update_preview()
+    assert len(set(preview_pixel(loaded_window, 50, 150))) == 1
+
+    loaded_window.undo()
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 50, 150) == (220, 60, 30), timeout=2000)
+
+
+def test_new_change_clears_redo(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.vignette_slider.setValue(10)
+    loaded_window.undo()
+    assert loaded_window.redo_action.isEnabled()
+
+    panel.aging_slider.setValue(10)
+
+    assert not loaded_window.redo_action.isEnabled()
+    loaded_window._commit_history()
+    assert not loaded_window._history.can_redo()
+
+
+def test_load_clears_history(loaded_window, tmp_path, questions):
+    loaded_window.settings_panel.brightness_slider.setValue(30)
+    loaded_window._commit_history()
+    path = tmp_path / "other.png"
+    Image.new("RGB", (50, 40)).save(path)
+
+    loaded_window.load_file(path)
+
+    assert not loaded_window.undo_action.isEnabled()
+    assert not loaded_window.redo_action.isEnabled()
+    loaded_window.undo()
+    assert loaded_window.settings_panel.settings() == EditSettings()
+
+
+def test_reset_clears_history(loaded_window, questions):
+    loaded_window.settings_panel.brightness_slider.setValue(30)
+    loaded_window._commit_history()
+
+    loaded_window.reset()
+
+    assert not loaded_window.undo_action.isEnabled()
+    assert not loaded_window._history.can_undo()
+
+
+def test_undo_disabled_while_saving(loaded_window, qtbot, tmp_path):
+    loaded_window.settings_panel.brightness_slider.setValue(30)
+    with qtbot.waitSignal(loaded_window.save_finished, timeout=10000):
+        assert loaded_window.save_to(tmp_path / "out.png")
+        assert not loaded_window.undo_action.isEnabled()
+    assert loaded_window.undo_action.isEnabled()
