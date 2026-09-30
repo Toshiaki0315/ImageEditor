@@ -7,12 +7,14 @@ from PIL import Image
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
+    SaveOptions,
     UnsupportedImageError,
     flatten_alpha,
     format_for_path,
     is_supported,
     load_image,
     normalize_mode,
+    prepare_exif,
     save_image,
 )
 
@@ -328,3 +330,141 @@ def test_core_io_does_not_import_qt():
 
 def _close(actual, expected, tolerance: int = 10) -> bool:
     return all(abs(a - e) <= tolerance for a, e in zip(actual[:3], expected, strict=True))
+
+
+# --- JPEG 品質・EXIF -------------------------------------------------------------
+
+TAG_ORIENTATION = 0x0112
+TAG_MAKE = 0x010F
+TAG_EXIF_IFD = 0x8769
+TAG_GPS_IFD = 0x8825
+TAG_DATETIME_ORIGINAL = 0x9003
+TAG_PIXEL_X = 0xA002
+TAG_PIXEL_Y = 0xA003
+TAKEN_AT = "2026:01:02 03:04:05"
+
+
+def make_exif(orientation: int = 6) -> Image.Exif:
+    """撮影日時・カメラ・向き・位置情報を持つ EXIF。"""
+    exif = Image.Exif()
+    exif[TAG_ORIENTATION] = orientation
+    exif[TAG_MAKE] = "TestCamera"
+    exif_ifd = exif.get_ifd(TAG_EXIF_IFD)
+    exif_ifd[TAG_DATETIME_ORIGINAL] = TAKEN_AT
+    exif_ifd[TAG_PIXEL_X] = 40
+    exif_ifd[TAG_PIXEL_Y] = 20
+    exif.get_ifd(TAG_GPS_IFD)[1] = "N"  # GPSLatitudeRef
+    return exif
+
+
+def read_exif(path) -> tuple[Image.Exif, dict]:
+    """保存したファイルの EXIF と Exif IFD を返す（TIFF はファイルを開いている間に読む）。"""
+    with Image.open(path) as image:
+        exif = image.getexif()
+        return exif, dict(exif.get_ifd(TAG_EXIF_IFD))
+
+
+def test_save_options_defaults():
+    options = SaveOptions()
+    assert options.quality == 90
+    assert options.keep_exif
+    assert not options.keep_gps
+
+
+@pytest.mark.parametrize("quality", [0, 101])
+def test_save_quality_out_of_range(tmp_path, quality):
+    with pytest.raises(ValueError):
+        save_image(make_sample(), tmp_path / "x.jpg", quality=quality)
+
+
+def test_load_keeps_exif(tmp_path):
+    path = tmp_path / "rotated.jpg"
+    make_sample().save(path, exif=make_exif(orientation=6))
+
+    loaded = load_image(path)
+
+    # 向きは補正済み（6 = 時計回りに 90° 回して見る）で、EXIF は元のまま持つ
+    assert loaded.image.size == (20, 40)
+    assert loaded.exif is not None
+    exif = Image.Exif()
+    exif.load(loaded.exif)
+    assert exif[TAG_ORIENTATION] == 6
+    assert exif.get_ifd(TAG_EXIF_IFD)[TAG_DATETIME_ORIGINAL] == TAKEN_AT
+
+
+def test_load_without_exif(tmp_path):
+    path = tmp_path / "plain.png"
+    make_sample().save(path)
+    assert load_image(path).exif is None
+
+
+def test_load_with_broken_exif_still_loads(tmp_path, monkeypatch):
+    path = tmp_path / "plain.png"
+    make_sample().save(path)
+
+    def broken(self, *args, **kwargs):
+        raise SyntaxError("broken exif")
+
+    # EXIF を書き出せない（壊れている）場合
+    monkeypatch.setattr(Image.Exif, "tobytes", broken)
+
+    loaded = load_image(path)
+
+    assert loaded.exif is None
+    assert loaded.image.size == (40, 20)
+
+
+def test_prepare_exif():
+    source = make_exif(orientation=6).tobytes()
+
+    prepared = Image.Exif()
+    prepared.load(prepare_exif(source, (300, 200)))
+
+    assert prepared[TAG_ORIENTATION] == 1  # 補正済みなので「そのまま」
+    assert prepared[TAG_MAKE] == "TestCamera"
+    exif_ifd = prepared.get_ifd(TAG_EXIF_IFD)
+    assert exif_ifd[TAG_DATETIME_ORIGINAL] == TAKEN_AT
+    assert (exif_ifd[TAG_PIXEL_X], exif_ifd[TAG_PIXEL_Y]) == (300, 200)
+    assert TAG_GPS_IFD not in prepared  # 位置情報は既定で外す
+
+
+def test_prepare_exif_keep_gps():
+    prepared = Image.Exif()
+    prepared.load(prepare_exif(make_exif().tobytes(), (10, 10), keep_gps=True))
+    assert prepared.get_ifd(TAG_GPS_IFD)[1] == "N"
+
+
+def test_prepare_exif_does_not_modify_source():
+    source = make_exif().tobytes()
+    before = bytes(source)
+    prepare_exif(source, (1, 1))
+    assert source == before
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".png", ".tif"])
+def test_save_with_exif(tmp_path, suffix):
+    path = tmp_path / f"out{suffix}"
+    exif = prepare_exif(make_exif(orientation=6).tobytes(), (40, 20))
+
+    save_image(make_sample(), path, exif=exif)
+
+    saved, exif_ifd = read_exif(path)
+    assert saved[TAG_ORIENTATION] == 1
+    assert exif_ifd[TAG_DATETIME_ORIGINAL] == TAKEN_AT
+    # 他のアプリでも回転せずに、保存したとおりの向きで表示される
+    loaded = load_image(path)
+    assert loaded.image.size == (40, 20)
+    assert _close(loaded.image.getpixel((5, 10)), RED)
+
+
+@pytest.mark.parametrize("suffix", [".bmp", ".gif"])
+def test_exif_is_ignored_for_other_formats(tmp_path, suffix):
+    path = tmp_path / f"out{suffix}"
+    save_image(make_sample(), path, exif=make_exif().tobytes())
+    assert load_image(path).image.size == (40, 20)
+
+
+def test_save_without_exif(tmp_path):
+    path = tmp_path / "out.jpg"
+    save_image(make_sample(), path)
+    assert len(read_exif(path)[0]) == 0

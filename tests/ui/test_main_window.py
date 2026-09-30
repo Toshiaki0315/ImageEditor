@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
-from image_editor.core.io import load_image
+from image_editor.core.io import SaveOptions, load_image
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import AspectRatio, CropRect
@@ -1550,3 +1550,97 @@ def test_undo_disabled_while_saving(loaded_window, qtbot, tmp_path):
         assert loaded_window.save_to(tmp_path / "out.png")
         assert not loaded_window.undo_action.isEnabled()
     assert loaded_window.undo_action.isEnabled()
+
+
+# --- 保存の設定（JPEG 品質・EXIF） ----------------------------------------------
+
+TAG_ORIENTATION = 0x0112
+TAG_EXIF_IFD = 0x8769
+TAG_GPS_IFD = 0x8825
+TAG_DATETIME_ORIGINAL = 0x9003
+TAKEN_AT = "2026:01:02 03:04:05"
+
+
+@pytest.fixture
+def exif_window(window, tmp_path):
+    """向き 6（時計回りに 90°）・撮影日時・位置情報を持つ 40x20 の JPEG を開いたウィンドウ。"""
+    exif = Image.Exif()
+    exif[TAG_ORIENTATION] = 6
+    exif.get_ifd(TAG_EXIF_IFD)[TAG_DATETIME_ORIGINAL] = TAKEN_AT
+    exif.get_ifd(TAG_GPS_IFD)[1] = "N"
+    path = tmp_path / "camera.jpg"
+    Image.new("RGB", (40, 20), (220, 60, 30)).save(path, exif=exif)
+    window.load_file(path)
+    return window
+
+
+def saved_exif(path):
+    with Image.open(path) as image:
+        exif = image.getexif()
+        return exif, dict(exif.get_ifd(TAG_EXIF_IFD)), dict(exif.get_ifd(TAG_GPS_IFD))
+
+
+def test_save_keeps_exif_without_gps(exif_window, qtbot, tmp_path):
+    out = tmp_path / "out.jpg"
+
+    save_and_wait(qtbot, exif_window, out)
+
+    exif, exif_ifd, gps = saved_exif(out)
+    assert exif[TAG_ORIENTATION] == 1
+    assert exif_ifd[TAG_DATETIME_ORIGINAL] == TAKEN_AT
+    assert gps == {}
+    # 向きは補正済みで、他のアプリで開いても回転しない
+    assert load_image(out).image.size == (20, 40)
+
+
+def test_save_keeps_gps_when_selected(exif_window, qtbot, tmp_path):
+    exif_window.settings_panel.set_save_options(SaveOptions(keep_gps=True))
+    out = tmp_path / "out.png"
+
+    save_and_wait(qtbot, exif_window, out)
+
+    assert saved_exif(out)[2] == {1: "N"}
+
+
+def test_save_without_exif(exif_window, qtbot, tmp_path):
+    exif_window.settings_panel.keep_exif_check.setChecked(False)
+    out = tmp_path / "out.jpg"
+
+    save_and_wait(qtbot, exif_window, out)
+
+    assert len(saved_exif(out)[0]) == 0
+
+
+def test_save_uses_quality(loaded_window, qtbot, tmp_path):
+    noisy = Image.effect_noise((200, 200), 64).convert("RGB")
+    path = tmp_path / "noisy.png"
+    noisy.save(path)
+    loaded_window.load_file(path)
+    low, high = tmp_path / "low.jpg", tmp_path / "high.jpg"
+
+    loaded_window.settings_panel.quality_slider.setValue(10)
+    save_and_wait(qtbot, loaded_window, low)
+    loaded_window.settings_panel.quality_slider.setValue(95)
+    save_and_wait(qtbot, loaded_window, high)
+
+    assert low.stat().st_size < high.stat().st_size
+
+
+def test_save_options_are_remembered(qtbot, preferences):
+    first = MainWindow()
+    qtbot.addWidget(first)
+    first.settings_panel.set_save_options_expanded(True)
+    first.settings_panel.quality_slider.setValue(70)
+    first.settings_panel.keep_gps_check.setChecked(True)
+
+    # 次に起動したとき（同じ環境設定を読む）も前回の値を使う
+    second = MainWindow()
+    qtbot.addWidget(second)
+
+    assert second.settings_panel.save_options() == SaveOptions(quality=70, keep_gps=True)
+    assert second.settings_panel.is_save_options_expanded()
+
+
+def test_save_options_start_with_defaults(window):
+    assert window.settings_panel.save_options() == SaveOptions()
+    assert not window.settings_panel.is_save_options_expanded()

@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt
 
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
+from image_editor.core.io import SaveOptions
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
 from image_editor.core.transform import AspectRatio, CropRect, Orientation, OrientOp
@@ -1177,3 +1178,72 @@ def test_is_adjusting(panel):
     assert panel.is_adjusting()
     panel.saturation_slider.setSliderDown(False)
     assert not panel.is_adjusting()
+
+
+# --- 保存の設定 -----------------------------------------------------------------
+
+
+def test_save_options_defaults(panel):
+    assert panel.save_options() == SaveOptions()
+    assert panel.quality_value_label.text() == "90"
+    assert (panel.quality_slider.minimum(), panel.quality_slider.maximum()) == (1, 100)
+    assert not panel.is_save_options_expanded()  # 既定は閉じる
+    assert panel.save_options_summary.text() == "JPEG 90 ／ EXIF あり（位置情報なし）"
+
+
+def test_save_options_toggle(panel, qtbot):
+    with qtbot.waitSignal(panel.save_options_expanded_changed) as blocker:
+        panel.save_options_toggle.click()
+
+    assert blocker.args == [True]
+    assert panel.is_save_options_expanded()
+    assert panel.save_options_body.isVisibleTo(panel)
+    assert not panel.save_options_summary.isVisibleTo(panel)
+
+
+def test_save_options_changed(panel, qtbot):
+    panel.set_save_options_expanded(True)
+
+    with qtbot.waitSignal(panel.save_options_changed) as blocker:
+        panel.quality_slider.setValue(75)
+    assert blocker.args[0] == SaveOptions(quality=75)
+    assert panel.quality_value_label.text() == "75"
+
+    panel.keep_gps_check.setChecked(True)
+    assert panel.save_options() == SaveOptions(quality=75, keep_gps=True)
+    assert "位置情報あり" in panel.save_options_summary.text()
+
+
+def test_gps_needs_exif(panel):
+    assert panel.keep_gps_check.isEnabled()
+
+    panel.keep_exif_check.setChecked(False)
+
+    assert not panel.keep_gps_check.isEnabled()
+    assert panel.save_options_summary.text() == "JPEG 90 ／ EXIF なし"
+
+
+def test_set_save_options_does_not_emit(panel, qtbot):
+    with qtbot.assertNotEmitted(panel.save_options_changed):
+        panel.set_save_options(SaveOptions(quality=50, keep_exif=False))
+
+    assert panel.save_options() == SaveOptions(quality=50, keep_exif=False)
+    assert panel.quality_value_label.text() == "50"
+    assert not panel.keep_gps_check.isEnabled()
+
+
+def test_save_options_are_kept_on_new_image(panel):
+    panel.set_save_options(SaveOptions(quality=60, keep_gps=True))
+
+    panel.set_image_size((200, 100))
+    panel.reset_adjustments()
+
+    assert panel.save_options() == SaveOptions(quality=60, keep_gps=True)
+    assert panel.settings() == EditSettings()  # 編集の設定には含めない
+
+
+def test_quality_double_click_resets_to_default(panel, qtbot):
+    panel.set_save_options_expanded(True)
+    panel.quality_slider.setValue(40)
+    qtbot.mouseDClick(panel.quality_slider, Qt.MouseButton.LeftButton)
+    assert panel.quality_slider.value() == 90
