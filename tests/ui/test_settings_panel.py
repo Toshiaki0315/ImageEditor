@@ -1247,3 +1247,25 @@ def test_quality_double_click_resets_to_default(panel, qtbot):
     panel.quality_slider.setValue(40)
     qtbot.mouseDClick(panel.quality_slider, Qt.MouseButton.LeftButton)
     assert panel.quality_slider.value() == 90
+
+
+# --- 加工前との比較 -------------------------------------------------------------
+
+
+def test_compare_button_emits_while_pressed(panel, qtbot):
+    assert panel.compare_button.text() == "加工前"
+    assert panel.compare_button.isEnabled()
+
+    with qtbot.waitSignal(panel.compare_toggled) as pressed:
+        qtbot.mousePress(panel.compare_button, Qt.MouseButton.LeftButton)
+    with qtbot.waitSignal(panel.compare_toggled) as released:
+        qtbot.mouseRelease(panel.compare_button, Qt.MouseButton.LeftButton)
+
+    assert pressed.args == [True]
+    assert released.args == [False]
+
+
+def test_compare_button_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not widget.compare_button.isEnabled()
