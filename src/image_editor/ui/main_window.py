@@ -363,6 +363,10 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self, settings: EditSettings) -> None:
         overlay = self.drop_area.crop_overlay
         overlay.set_aspect(*self.settings_panel.crop_aspect())
+        # 回転・反転で画像の向きが変わったら、範囲選択の座標系も合わせる
+        image_size = self.settings_panel.image_size()
+        if image_size is not None and overlay.image_size() != image_size:
+            overlay.set_image_size(image_size)
         # ドラッグ中の変更はオーバーレイ自身が発生源なので書き戻さない
         if not overlay.is_dragging():
             overlay.set_crop(settings.crop)
@@ -370,7 +374,12 @@ class MainWindow(QMainWindow):
             self._update_status()
         # 表示に影響する設定が変わったときだけ描き直す
         if self.loaded is not None and self._preview_key(settings) != self._rendered_key:
-            self._auto_preview_timer.start()
+            rendered = self._rendered_key
+            if rendered is not None and rendered[0] != settings.orientation:  # [0] は向き
+                # 向きが変わったら、範囲選択の座標系とずれないようすぐに描き直す
+                self.update_preview()
+            else:
+                self._auto_preview_timer.start()
 
     def _preview_key(self, settings: EditSettings) -> tuple[object, ...]:
         """プレビューの見た目を決める条件。サイズ変更は表示に反映しないので含めない。"""
@@ -382,6 +391,7 @@ class MainWindow(QMainWindow):
         frame = settings.frame if affects_view else None
         shape = (settings.shape, settings.corner_radius) if affects_view else None
         return (
+            settings.orientation,
             settings.filter,
             settings.temperature,
             settings.saturation,

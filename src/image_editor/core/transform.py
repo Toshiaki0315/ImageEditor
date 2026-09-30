@@ -1,4 +1,4 @@
-"""トリミング・リサイズ。"""
+"""回転・反転・トリミング・リサイズ。"""
 
 from __future__ import annotations
 
@@ -175,6 +175,82 @@ def fit_size(
         return (width, _round_div(orig_height * width, orig_width))
     assert height is not None
     return (_round_div(orig_width * height, orig_height), height)
+
+
+class OrientOp(Enum):
+    """回転・反転の操作（表示中の向きに対して行う）。"""
+
+    ROTATE_LEFT = "rotate_left"  # 反時計回りに 90°
+    ROTATE_RIGHT = "rotate_right"  # 時計回りに 90°
+    FLIP_HORIZONTAL = "flip_horizontal"  # 左右反転
+    FLIP_VERTICAL = "flip_vertical"  # 上下反転
+
+    @property
+    def swaps_sides(self) -> bool:
+        """幅と高さが入れ替わる操作か。"""
+        return self in (OrientOp.ROTATE_LEFT, OrientOp.ROTATE_RIGHT)
+
+
+# 時計回りの回転角 → PIL の Transpose（PIL の ROTATE_* は反時計回り）
+_ROTATE_TRANSPOSE = {
+    90: Image.Transpose.ROTATE_270,
+    180: Image.Transpose.ROTATE_180,
+    270: Image.Transpose.ROTATE_90,
+}
+
+
+@dataclass(frozen=True)
+class Orientation:
+    """画像の向き。左右反転 (mirror) してから時計回りに rotation 度回した状態を表す。
+
+    回転と反転の組み合わせはすべてこの 8 通りのどれかにまとまる。
+    """
+
+    rotation: int = 0  # 0 / 90 / 180 / 270（時計回り）
+    mirror: bool = False
+
+    def is_identity(self) -> bool:
+        """回転も反転もしていないか。"""
+        return self.rotation == 0 and not self.mirror
+
+    def apply(self, op: OrientOp) -> Orientation:
+        """今の向きに op を重ねた向きを返す。"""
+        rotation, mirror = self.rotation, self.mirror
+        if op is OrientOp.ROTATE_RIGHT:
+            rotation += 90
+        elif op is OrientOp.ROTATE_LEFT:
+            rotation -= 90
+        elif op is OrientOp.FLIP_HORIZONTAL:
+            # 左右反転 ∘ 回転(r) = 回転(-r) ∘ 左右反転
+            rotation, mirror = -rotation, not mirror
+        else:
+            # 上下反転 = 180° 回転 ∘ 左右反転
+            rotation, mirror = 180 - rotation, not mirror
+        return Orientation(rotation % 360, mirror)
+
+    def size(self, size: tuple[int, int]) -> tuple[int, int]:
+        """size の画像をこの向きにしたときの大きさを返す。"""
+        return (size[1], size[0]) if self.rotation in (90, 270) else size
+
+    def transpose(self, image: Image.Image) -> Image.Image:
+        """画像をこの向きにした新しい画像を返す（入力画像は変更しない）。"""
+        if self.mirror:
+            image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if self.rotation:
+            image = image.transpose(_ROTATE_TRANSPOSE[self.rotation])
+        return image
+
+
+def transform_rect(rect: CropRect, image_size: tuple[int, int], op: OrientOp) -> CropRect:
+    """image_size の画像上の範囲を、画像に op をかけた後の同じ部分を指す範囲に変換する。"""
+    width, height = image_size
+    if op is OrientOp.ROTATE_RIGHT:
+        return CropRect(height - (rect.y + rect.height), rect.x, rect.height, rect.width)
+    if op is OrientOp.ROTATE_LEFT:
+        return CropRect(rect.y, width - (rect.x + rect.width), rect.height, rect.width)
+    if op is OrientOp.FLIP_HORIZONTAL:
+        return CropRect(width - (rect.x + rect.width), rect.y, rect.width, rect.height)
+    return CropRect(rect.x, height - (rect.y + rect.height), rect.width, rect.height)
 
 
 def resize(image: Image.Image, size: tuple[int, int]) -> Image.Image:

@@ -7,6 +7,8 @@ from PIL import Image
 from image_editor.core.transform import (
     AspectRatio,
     CropRect,
+    Orientation,
+    OrientOp,
     aspect_drag_rect,
     clamp_crop,
     constrain_rect,
@@ -15,6 +17,7 @@ from image_editor.core.transform import (
     fit_size,
     oriented,
     resize,
+    transform_rect,
 )
 
 # --- clamp_crop ---------------------------------------------------------------
@@ -301,3 +304,103 @@ def test_aspect_drag_rect_stays_in_image(point, aspect):
 def test_aspect_drag_rect_click_is_empty():
     result = aspect_drag_rect((100, 100), (100, 100), (4, 3), (1000, 500))
     assert (result.width, result.height) == (0, 0)
+
+
+# --- 回転・反転 ---------------------------------------------------------------
+
+# 表示中の画像に op をかけたときと同じ PIL の操作
+OP_TRANSPOSE = {
+    OrientOp.ROTATE_RIGHT: Image.Transpose.ROTATE_270,
+    OrientOp.ROTATE_LEFT: Image.Transpose.ROTATE_90,
+    OrientOp.FLIP_HORIZONTAL: Image.Transpose.FLIP_LEFT_RIGHT,
+    OrientOp.FLIP_VERTICAL: Image.Transpose.FLIP_TOP_BOTTOM,
+}
+
+
+def asymmetric_image() -> Image.Image:
+    """回転・反転の違いがすべて見分けられる 5x3 の画像（画素ごとに違う色）。"""
+    image = Image.new("RGB", (5, 3))
+    image.putdata([(x * 50, y * 100, 7) for y in range(3) for x in range(5)])
+    return image
+
+
+def test_identity_orientation():
+    orientation = Orientation()
+    image = asymmetric_image()
+    assert orientation.is_identity()
+    assert orientation.size((5, 3)) == (5, 3)
+    assert orientation.transpose(image).tobytes() == image.tobytes()
+
+
+@pytest.mark.parametrize(
+    "ops",
+    [
+        [OrientOp.ROTATE_RIGHT],
+        [OrientOp.ROTATE_LEFT],
+        [OrientOp.FLIP_HORIZONTAL],
+        [OrientOp.FLIP_VERTICAL],
+        [OrientOp.ROTATE_RIGHT, OrientOp.FLIP_HORIZONTAL],
+        [OrientOp.FLIP_HORIZONTAL, OrientOp.ROTATE_RIGHT],
+        [OrientOp.ROTATE_LEFT, OrientOp.FLIP_VERTICAL, OrientOp.ROTATE_LEFT],
+        [OrientOp.FLIP_VERTICAL, OrientOp.FLIP_HORIZONTAL, OrientOp.ROTATE_RIGHT],
+    ],
+)
+def test_orientation_matches_sequential_ops(ops):
+    # 操作を順に重ねた向きは、画像に操作を順にかけた結果と一致する
+    image = asymmetric_image()
+    expected = image
+    orientation = Orientation()
+    for op in ops:
+        expected = expected.transpose(OP_TRANSPOSE[op])
+        orientation = orientation.apply(op)
+
+    result = orientation.transpose(image)
+
+    assert result.size == expected.size == orientation.size(image.size)
+    assert result.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize(
+    ("ops", "expected"),
+    [
+        ([OrientOp.ROTATE_RIGHT] * 4, Orientation()),
+        ([OrientOp.ROTATE_LEFT, OrientOp.ROTATE_RIGHT], Orientation()),
+        ([OrientOp.FLIP_HORIZONTAL] * 2, Orientation()),
+        ([OrientOp.FLIP_VERTICAL] * 2, Orientation()),
+        ([OrientOp.FLIP_HORIZONTAL, OrientOp.FLIP_VERTICAL], Orientation(180, False)),
+        ([OrientOp.ROTATE_RIGHT], Orientation(90, False)),
+        ([OrientOp.ROTATE_LEFT], Orientation(270, False)),
+    ],
+)
+def test_orientation_is_normalized(ops, expected):
+    orientation = Orientation()
+    for op in ops:
+        orientation = orientation.apply(op)
+    assert orientation == expected
+
+
+def test_transpose_does_not_modify_input():
+    image = asymmetric_image()
+    before = image.tobytes()
+    Orientation(90, True).transpose(image)
+    assert image.tobytes() == before
+
+
+def test_swaps_sides():
+    assert OrientOp.ROTATE_LEFT.swaps_sides
+    assert OrientOp.ROTATE_RIGHT.swaps_sides
+    assert not OrientOp.FLIP_HORIZONTAL.swaps_sides
+    assert not OrientOp.FLIP_VERTICAL.swaps_sides
+
+
+@pytest.mark.parametrize("op", list(OrientOp))
+@pytest.mark.parametrize("rect", [CropRect(1, 0, 2, 2), CropRect(0, 1, 5, 2), CropRect(3, 1, 2, 1)])
+def test_transform_rect_points_to_same_part(op, rect):
+    # 回した画像を変換した範囲で切り抜く = 切り抜いてから回す
+    image = asymmetric_image()
+    rotated = image.transpose(OP_TRANSPOSE[op])
+
+    moved = transform_rect(rect, image.size, op)
+
+    expected = crop(image, rect).transpose(OP_TRANSPOSE[op])
+    assert crop(rotated, moved).tobytes() == expected.tobytes()

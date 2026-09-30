@@ -10,15 +10,16 @@ from image_editor.core import effects, filters, frames, shapes, transform
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FRAME_COLOR, FrameType
 from image_editor.core.shapes import ShapeType
-from image_editor.core.transform import CropRect
+from image_editor.core.transform import CropRect, Orientation
 
 PREVIEW_MAX_SIDE = 1600
 
 
 @dataclass(frozen=True)
 class EditSettings:
-    """編集設定。トリミング範囲は原画像の座標系で持つ。"""
+    """編集設定。トリミング範囲は、回転・反転した後の原寸画像の座標系で持つ。"""
 
+    orientation: Orientation = Orientation()
     crop: CropRect | None = None
     width: int | None = None
     height: int | None = None
@@ -39,13 +40,13 @@ class EditSettings:
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング（フレームの写真部分・円の比率への切り抜きを含む）→ リサイズ → 露出
-    → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光 → 経年劣化 → 形
-    → フレーム。形の外側は、フレームがあればフレームの白、なければ透明にする。
+    処理順: 回転・反転 → トリミング（フレームの写真部分・円の比率への切り抜きを含む）
+    → リサイズ → 露出 → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光
+    → 経年劣化 → 形 → フレーム。形の外側は、フレームがあればフレームの白、なければ透明にする。
     フレームには周辺減光・経年劣化をかけない。
     """
-    image = original
-    rect = effective_crop(original.size, settings.crop, settings.frame, settings.shape)
+    image = settings.orientation.transpose(original)
+    rect = effective_crop(image.size, settings.crop, settings.frame, settings.shape)
     if rect is not None:
         image = transform.crop(image, rect)
 
@@ -72,8 +73,9 @@ def render_preview(
 ) -> Image.Image:
     """プレビュー表示用の画像を返す（入力画像は変更しない）。
 
-    image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色・周辺減光・
-    経年劣化を適用し、リサイズは適用しない（出力サイズは output_size で確認する）。
+    image は原画像を factor 倍に縮小したプレビュー用の画像（回転・反転する前のもの）。
+    回転・反転・フィルターの色・周辺減光・経年劣化を適用し、リサイズは適用しない
+    （出力サイズは output_size で確認する）。
 
     - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（フレーム・円が
       あればその比率に切り抜いた範囲。なければ全体）を基準にかけ、トリミング範囲は
@@ -81,6 +83,7 @@ def render_preview(
     - trimmed=True: 切り抜いた範囲だけを表示し、形とフレームも反映して完成形を見せる
       （切り抜く範囲がなければ全体）
     """
+    image = settings.orientation.transpose(image)
     scaled = scale_settings(settings, factor)
     rect = effective_crop(image.size, scaled.crop, scaled.frame, scaled.shape)
     rendered = filters.apply_filter(_apply_basic_adjustments(image, settings), settings.filter)
@@ -105,8 +108,8 @@ def render_preview(
 
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:
     """画像を処理せずに、apply_edits の出力サイズを計算する（フレームを含む）。"""
-    size = original_size
-    rect = effective_crop(original_size, settings.crop, settings.frame, settings.shape)
+    size = settings.orientation.size(original_size)
+    rect = effective_crop(size, settings.crop, settings.frame, settings.shape)
     if rect is not None:
         size = (rect.width, rect.height)
     size = transform.fit_size(size, settings.width, settings.height, settings.keep_aspect)

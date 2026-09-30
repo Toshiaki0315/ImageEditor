@@ -51,10 +51,13 @@ from image_editor.core.transform import (
     MIN_SIZE,
     AspectRatio,
     CropRect,
+    Orientation,
+    OrientOp,
     clamp_crop,
     constrain_rect,
     fit_aspect,
     fit_size,
+    transform_rect,
 )
 
 # 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
@@ -83,6 +86,7 @@ class SettingsPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image_size: tuple[int, int] | None = None
+        self._orientation = Orientation()
         # ユーザーが幅・高さを手で変えたか。変えていなければトリミング範囲に追従する
         self._size_edited = False
         # 縦横比保持時に基準にする側（最後に編集した側）
@@ -165,6 +169,16 @@ class SettingsPanel(QWidget):
         self.reset_adjustments_button = QPushButton("加工をリセット")
         filter_form.addRow(self.reset_adjustments_button)
 
+        # 回転・反転（表示中の向きに対して行う）
+        self.rotate_left_button = QPushButton("左に回転")
+        self.rotate_right_button = QPushButton("右に回転")
+        self.flip_horizontal_button = QPushButton("左右反転")
+        self.flip_vertical_button = QPushButton("上下反転")
+        orient_box = QGroupBox("回転・反転")
+        orient_row = QHBoxLayout(orient_box)
+        for button in self._orient_buttons():
+            orient_row.addWidget(button)
+
         # トリミング
         self.crop_x_spin = _spin_box(0, MAX_SIZE, " px")
         self.crop_y_spin = _spin_box(0, MAX_SIZE, " px")
@@ -208,6 +222,7 @@ class SettingsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(size_box)
         layout.addWidget(filter_box)
+        layout.addWidget(orient_box)
         layout.addWidget(crop_box)
         layout.addStretch(1)
         layout.addLayout(buttons)
@@ -235,6 +250,8 @@ class SettingsPanel(QWidget):
         self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
         self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
         self.reset_adjustments_button.clicked.connect(self.reset_adjustments)
+        for button, op in zip(self._orient_buttons(), OrientOp, strict=True):
+            button.clicked.connect(lambda _, op=op: self.apply_orientation(op))
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -244,17 +261,15 @@ class SettingsPanel(QWidget):
 
     def set_image_size(self, size: tuple[int, int] | None) -> None:
         """画像のサイズを設定し、すべての設定を初期状態に戻す。None で未読込状態にする。"""
+        # _image_size は回転・反転した後の大きさ（トリミング範囲の座標系）
         self._image_size = size
+        self._orientation = Orientation()
         self._committed_crop = None
         self._size_edited = False
         self._last_edited = "width"
         with self._block():
             self._show_blank(size is None)
-            width, height = size or (MIN_SIZE, MIN_SIZE)
-            self.crop_x_spin.setMaximum(max(0, width - 1))
-            self.crop_y_spin.setMaximum(max(0, height - 1))
-            self.crop_width_spin.setMaximum(width)
-            self.crop_height_spin.setMaximum(height)
+            self._set_crop_limits(size or (MIN_SIZE, MIN_SIZE))
             for spin in self._crop_spins():
                 spin.setValue(0)
             self.keep_aspect_check.setChecked(True)
@@ -295,6 +310,7 @@ class SettingsPanel(QWidget):
             else:
                 width = None
         return EditSettings(
+            orientation=self._orientation,
             crop=crop,
             width=width,
             height=height,
@@ -376,6 +392,38 @@ class SettingsPanel(QWidget):
         if enabled and not self.trim_button.isEnabled():
             return
         self.trim_button.setChecked(enabled)
+
+    def orientation(self) -> Orientation:
+        """今の向き（回転・反転）を返す。"""
+        return self._orientation
+
+    def image_size(self) -> tuple[int, int] | None:
+        """回転・反転した後の画像の大きさ（トリミング範囲の座標系）を返す。"""
+        return self._image_size
+
+    def apply_orientation(self, op: OrientOp) -> None:
+        """表示中の向きに対して回転・反転する。
+
+        同じ写真の部分を指すよう、トリミング範囲も一緒に回す。90° 回すときは、手で変えた
+        幅・高さと、比の「縦向き」も入れ替える。変更は 1 回だけ通知する。
+        """
+        if self._image_size is None:
+            return
+        old_size = self._image_size
+        rect = self._clamped_range()
+        self._orientation = self._orientation.apply(op)
+        self._image_size = self._orientation.size(old_size)
+        with self._block():
+            self._set_crop_limits(self._image_size)
+            if rect is not None:
+                self._set_crop_spins(transform_rect(rect, old_size, op))
+            if op.swaps_sides:
+                if self._size_edited:
+                    self._set_size_spins((self.height_spin.value(), self.width_spin.value()))
+                    self._last_edited = "height" if self._last_edited == "width" else "width"
+                if self.portrait_check.isEnabled():
+                    self.portrait_check.setChecked(not self.portrait_check.isChecked())
+        self._on_crop_edited()
 
     def reset_adjustments(self) -> None:
         """テイストと色のスライダー（露出〜経年劣化）を既定値に戻す。
@@ -629,6 +677,23 @@ class SettingsPanel(QWidget):
         if self._image_size is None:
             return None
         return effective_crop(self._image_size, self._crop_rect(), self.frame(), self.shape())
+
+    def _orient_buttons(self) -> tuple[QPushButton, ...]:
+        """回転・反転のボタン（OrientOp と同じ順）。"""
+        return (
+            self.rotate_left_button,
+            self.rotate_right_button,
+            self.flip_horizontal_button,
+            self.flip_vertical_button,
+        )
+
+    def _set_crop_limits(self, size: tuple[int, int]) -> None:
+        """トリミングの数値欄の上限を画像の大きさに合わせる。"""
+        width, height = size
+        self.crop_x_spin.setMaximum(max(0, width - 1))
+        self.crop_y_spin.setMaximum(max(0, height - 1))
+        self.crop_width_spin.setMaximum(width)
+        self.crop_height_spin.setMaximum(height)
 
     def _adjustment_sliders(self) -> tuple["ResettableSlider", ...]:
         """色を変えるスライダー（「加工をリセット」で戻すもの）。"""
