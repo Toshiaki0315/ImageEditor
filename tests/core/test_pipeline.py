@@ -17,7 +17,7 @@ from image_editor.core.pipeline import (
     scale_settings,
 )
 from image_editor.core.shapes import ShapeType
-from image_editor.core.transform import CropRect
+from image_editor.core.transform import CropRect, Orientation
 
 RED = (255, 0, 0)
 BLUE = (0, 0, 255)
@@ -883,3 +883,69 @@ def test_render_preview_trimmed_rounded_without_crop():
     )
     assert result.size == (400, 300)
     assert result.getpixel((0, 0))[3] == 0
+
+
+# --- 回転・反転 ---------------------------------------------------------------
+
+
+def test_rotation_is_applied_first():
+    # 400x300 の左上 200x100 が赤。時計回りに 90° 回すと 300x400 で、赤は右上の 100x200
+    settings = EditSettings(orientation=Orientation(90, False))
+
+    result = apply_edits(make_sample(), settings)
+
+    assert result.size == (300, 400)
+    assert result.getpixel((250, 50)) == RED
+    assert result.getpixel((50, 50)) == BLUE
+
+
+def test_crop_uses_rotated_coordinates():
+    settings = EditSettings(orientation=Orientation(90, False), crop=CropRect(200, 0, 100, 200))
+    result = apply_edits(make_sample(), settings)
+    assert result.size == (100, 200)
+    assert result.getcolors() == [(100 * 200, RED)]
+
+
+def test_mirror():
+    result = apply_edits(make_sample(), EditSettings(orientation=Orientation(0, True)))
+    assert result.getpixel((399, 0)) == RED
+    assert result.getpixel((0, 0)) == BLUE
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+@pytest.mark.parametrize("mirror", [False, True])
+def test_output_size_with_orientation(rotation, mirror):
+    settings = EditSettings(
+        orientation=Orientation(rotation, mirror),
+        crop=CropRect(10, 20, 150, 250),
+        width=100,
+        frame=FrameType.POLAROID,
+    )
+    assert output_size((400, 300), settings) == apply_edits(make_sample(), settings).size
+
+
+def test_render_preview_is_rotated():
+    image = make_sample()
+    settings = EditSettings(orientation=Orientation(270, False))
+
+    result = render_preview(image, settings)
+
+    # 反時計回りに 90°: 赤は左下
+    assert result.size == (300, 400)
+    assert result.getpixel((50, 350)) == RED
+
+
+def test_render_preview_trimmed_rotated_matches_apply_edits():
+    image = make_sample()
+    settings = EditSettings(
+        orientation=Orientation(90, True), crop=CropRect(20, 30, 200, 250), shape=ShapeType.ROUNDED
+    )
+    assert (
+        render_preview(image, settings, trimmed=True).tobytes()
+        == apply_edits(image, settings).tobytes()
+    )
+
+
+def test_scale_settings_keeps_orientation():
+    settings = EditSettings(orientation=Orientation(180, True))
+    assert scale_settings(settings, 0.5).orientation == Orientation(180, True)

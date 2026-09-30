@@ -5,7 +5,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
-from image_editor.core.transform import AspectRatio, CropRect
+from image_editor.core.transform import AspectRatio, CropRect, Orientation, OrientOp
 from image_editor.ui.settings_panel import SettingsPanel
 
 
@@ -965,3 +965,103 @@ def test_reset_adjustments_button_disabled_without_image(qtbot):
 def test_reset_adjustments_button_enabled_after_load(panel):
     assert panel.reset_adjustments_button.isEnabled()
     assert panel.reset_adjustments_button.text() == "加工をリセット"
+
+
+# --- 回転・反転 ---------------------------------------------------------------
+
+
+def test_orient_buttons(panel, qtbot):
+    labels = [b.text() for b in panel._orient_buttons()]
+    assert labels == ["左に回転", "右に回転", "左右反転", "上下反転"]
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.rotate_right_button.click()
+
+    assert blocker.args[0].orientation == Orientation(90, False)
+    assert panel.image_size() == (300, 400)
+
+
+def test_rotation_updates_base_size_and_limits(panel):
+    panel.rotate_left_button.click()
+
+    assert panel.base_size() == (300, 400)
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (300, 400)
+    assert panel.crop_width_spin.maximum() == 300
+    assert panel.crop_height_spin.maximum() == 400
+    assert panel.settings().width is None  # 初期値のままならリサイズしない
+
+
+def test_rotation_moves_crop_with_image(panel):
+    panel.set_crop(CropRect(10, 20, 100, 50))
+
+    panel.rotate_right_button.click()
+
+    # 400x300 → 時計回りに 90°: (x, y) → (300 - y - h, x)
+    assert panel.settings().crop == CropRect(230, 10, 50, 100)
+
+    panel.flip_horizontal_button.click()
+    assert panel.settings().crop == CropRect(20, 10, 50, 100)
+
+
+def test_flip_keeps_size(panel):
+    panel.set_crop(CropRect(10, 20, 100, 50))
+    panel.flip_vertical_button.click()
+    assert panel.image_size() == (400, 300)
+    assert panel.settings().crop == CropRect(10, 230, 100, 50)
+
+
+def test_rotation_swaps_edited_size(panel):
+    panel.keep_aspect_check.setChecked(False)
+    panel.width_spin.setValue(200)
+    panel.height_spin.setValue(100)
+
+    panel.rotate_right_button.click()
+
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (100, 200)
+    settings = panel.settings()
+    assert (settings.width, settings.height) == (100, 200)
+
+
+def test_rotation_swaps_edited_size_keep_aspect(panel):
+    panel.width_spin.setValue(200)  # 200x150
+
+    panel.rotate_left_button.click()
+
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (150, 200)
+    assert panel.settings().height == 200
+
+
+def test_rotation_toggles_portrait_for_locked_ratio(panel):
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    panel.set_crop(CropRect(0, 0, 200, 150))
+
+    panel.rotate_right_button.click()
+
+    assert panel.portrait_check.isChecked()
+    assert panel.settings().crop == CropRect(150, 0, 150, 200)
+    assert panel.crop_aspect() == ((3, 4), False)
+
+
+def test_orientation_is_reset_on_new_image(panel):
+    panel.rotate_right_button.click()
+    panel.flip_horizontal_button.click()
+
+    panel.set_image_size((200, 100))
+
+    assert panel.orientation() == Orientation()
+    assert panel.image_size() == (200, 100)
+    assert panel.settings() == EditSettings()
+
+
+def test_orientation_is_kept_by_reset_adjustments(panel):
+    panel.rotate_right_button.click()
+    panel.reset_adjustments()
+    assert panel.orientation() == Orientation(90, False)
+
+
+def test_orient_buttons_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not any(b.isEnabled() for b in widget._orient_buttons())
+    widget.apply_orientation(OrientOp.ROTATE_RIGHT)
+    assert widget.orientation() == Orientation()

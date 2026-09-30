@@ -1297,3 +1297,63 @@ def test_reset_adjustments_keeps_image_and_crop(loaded_window, qtbot, questions)
     assert panel.settings().crop == CropRect(0, 0, 200, 100)
     assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 200, 100)
     qtbot.waitUntil(lambda: preview_pixel(loaded_window, 50, 150) == (220, 60, 30), timeout=2000)
+
+
+# --- 回転・反転 ---------------------------------------------------------------
+
+
+def test_rotation_updates_preview_immediately(loaded_window):
+    panel = loaded_window.settings_panel
+
+    panel.rotate_right_button.click()
+
+    # 待たずにすぐ描き直し、範囲選択の座標系も回転後に合わせる
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (300, 400)
+    assert loaded_window.drop_area.crop_overlay.image_size() == (300, 400)
+    # 左半分が赤の 400x300 → 時計回りに 90° で上半分が赤
+    assert preview_pixel(loaded_window, 150, 50) == (220, 60, 30)
+    assert preview_pixel(loaded_window, 150, 350) == (40, 120, 200)
+    assert "出力 300×400 px" in loaded_window.status_label.text()
+
+
+def test_rotation_moves_overlay_crop(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 100, 50))
+
+    panel.rotate_left_button.click()
+
+    # 反時計回りに 90°: (x, y) → (y, 400 - x - w)
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 300, 50, 100)
+
+
+def test_save_rotated(loaded_window, qtbot, tmp_path):
+    panel = loaded_window.settings_panel
+    panel.rotate_right_button.click()
+    panel.flip_vertical_button.click()
+    out = tmp_path / "rotated.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image
+    assert saved.size == (300, 400)
+    # 上半分が赤 → 上下反転で下半分が赤
+    assert saved.getpixel((150, 350)) == (220, 60, 30)
+    assert saved.getpixel((150, 50)) == (40, 120, 200)
+
+
+def test_rotation_counts_as_unsaved_change(loaded_window):
+    loaded_window.settings_panel.rotate_right_button.click()
+    assert loaded_window.has_unsaved_changes()
+
+
+def test_new_image_resets_orientation(loaded_window, tmp_path, questions):
+    loaded_window.settings_panel.rotate_right_button.click()
+    path = tmp_path / "other.png"
+    Image.new("RGB", (200, 100)).save(path)
+
+    loaded_window.load_file(path)
+
+    assert loaded_window.drop_area.crop_overlay.image_size() == (200, 100)
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (200, 100)

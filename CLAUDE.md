@@ -37,7 +37,10 @@ src/image_editor/
   core/                  # ★ Qt に依存しない純粋な画像処理層
     io.py                # 読み込み・保存・モード変換・EXIF 回転補正
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
-    transform.py         # リサイズ・トリミング
+    effects.py           # 露出・明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化
+    transform.py         # 回転・反転・リサイズ・トリミング・縦横比
+    shapes.py            # 形（角丸・円）の切り抜き
+    frames.py            # フレーム（ポラロイド・チェキ）
     pipeline.py          # EditSettings (dataclass) と apply_edits()
   ui/                    # PyQt6 のウィジェット
     main_window.py
@@ -45,6 +48,7 @@ src/image_editor/
     settings_panel.py
     crop_overlay.py      # プレビュー上のドラッグ範囲選択
     qt_image.py          # PIL.Image <-> QPixmap 変換
+    worker.py            # 原寸処理・保存のワーカー (QRunnable)
 tests/
   core/                  # core は必ずユニットテストを書く
   ui/                    # pytest-qt によるスモークテスト
@@ -54,8 +58,8 @@ tests/
 
 1. **core は Qt を import しない。** 画像処理はすべて `core/` の純粋関数で行い、UI からは `apply_edits(image, settings)` を呼ぶだけにする。
 2. **元画像は不変。** 読み込んだ原本 (`PIL.Image`) は保持し、プレビュー・保存のたびに原本から処理し直す。フィルターの重ね掛けをしない。
-3. **処理順は固定:** EXIF 回転補正 → トリミング → リサイズ → フィルター（ポラロイドの白枠はフィルターの最後に付与）。
-4. **プレビューは縮小版で処理する。** 長辺 1600px 程度に縮小した画像に設定を適用して表示し、保存時のみ原寸で処理する。トリミング座標は常に**原画像の座標系**で保持し、プレビュー表示時に換算する。
+3. **処理順は固定:** EXIF 回転補正 → 回転・反転 → トリミング → リサイズ → フィルター → 形 → フレーム（詳細は `docs/requirements.md` §5.1）。
+4. **プレビューは縮小版で処理する。** 長辺 1600px 程度に縮小した画像に設定を適用して表示し、保存時のみ原寸で処理する。トリミング座標は常に**回転・反転した後の原寸画像の座標系**で保持し、プレビュー表示時に換算する。
 5. **重い処理は UI スレッドで行わない。** 原寸処理・保存は `QThreadPool` / `QRunnable` 等で実行し、完了をシグナルで UI に返す。
 6. 型ヒントを付ける。公開関数には日本語で短い docstring を書く。
 7. 依存パッケージを増やすときは `pyproject.toml` に追記し、PR 説明に理由を書く。

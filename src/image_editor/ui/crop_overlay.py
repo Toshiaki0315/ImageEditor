@@ -116,6 +116,10 @@ class CropOverlay(QWidget):
         self._crop = None
         self.update()
 
+    def image_size(self) -> tuple[int, int] | None:
+        """原画像（回転・反転した後）のサイズを返す。"""
+        return self._image_size
+
     def set_crop(self, rect: CropRect | None) -> None:
         """表示する範囲を設定する（シグナルは発行しない）。画像外は補正して表示する。"""
         if rect is not None and self._image_size is not None:
