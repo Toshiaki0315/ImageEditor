@@ -91,6 +91,31 @@ def format_for_path(path: StrPath) -> str:
         raise UnsupportedImageError(f"対応していない拡張子です: {suffix or '(なし)'}") from None
 
 
+def default_save_path(path: Path) -> Path:
+    """保存ダイアログの初期パス `<元の名前>_edited.<元の拡張子>` を返す。
+
+    すでにあれば `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
+    """
+    candidate = path.with_name(f"{path.stem}_edited{path.suffix}")
+    number = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_edited_{number}{path.suffix}")
+        number += 1
+    return candidate
+
+
+def is_same_file(a: Path, b: Path) -> bool:
+    """2 つのパスが同じファイルを指すかを返す。
+
+    macOS のファイルシステムは大文字・小文字を区別しないので、実在するファイルは
+    os.path.samefile で判定し、まだ無いファイルは絶対パスを大文字・小文字を無視して比べる。
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return str(a.resolve()).casefold() == str(b.resolve()).casefold()
+
+
 def load_image(path: StrPath) -> LoadedImage:
     """画像を読み込み、EXIF 回転補正と RGB / RGBA への正規化を行って返す。
 

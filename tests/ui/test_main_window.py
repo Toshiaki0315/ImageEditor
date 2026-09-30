@@ -6,6 +6,7 @@ from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -65,7 +66,7 @@ def test_file_menu_actions(qtbot):
     menus = [a.menu() for a in window.menuBar().actions() if a.menu()]
     assert [m.title() for m in menus] == ["ファイル", "編集"]
     texts = [a.text() for a in menus[0].actions() if not a.isSeparator()]
-    assert texts == ["開く…", "保存…", "終了"]
+    assert texts == ["開く…", "保存…", "まとめて処理…", "終了"]
     assert window.open_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
     assert window.save_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Save)
     assert window.quit_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Quit)
@@ -2008,3 +2009,148 @@ def test_broken_presets_file_is_reported(qtbot, presets_path, warnings):
 
     assert warnings[-1][0] == "プリセットを読み込めません"
     assert window.settings_panel.presets() == []
+
+
+# --- まとめて処理 -----------------------------------------------------------------
+
+
+def make_images(folder, count, size=(400, 300)):
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i in range(count):
+        path = folder / f"img{i}.png"
+        Image.new("RGB", size, (220, 60, 30)).save(path)
+        paths.append(path)
+    return paths
+
+
+def run_batch_and_wait(qtbot, window, sources, out_dir, options):
+    with qtbot.waitSignal(window.batch_finished, timeout=20000) as blocker:
+        assert window.start_batch(sources, out_dir, options)
+        assert window.is_batch_running()
+        assert not window.batch_action.isEnabled()  # 実行中は始められない
+    return blocker.args
+
+
+def test_batch_applies_look_and_resize(window, qtbot, tmp_path, monkeypatch):
+    from image_editor.core.batch import BatchOptions
+    from image_editor.core.presets import Preset
+
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args[2]))
+    sources = make_images(tmp_path / "in", 3) + make_images(tmp_path / "tall", 1, (300, 400))
+
+    results, cancelled = run_batch_and_wait(
+        qtbot,
+        window,
+        sources,
+        tmp_path / "out",
+        BatchOptions(look=Preset(name="白黒", saturation=-100), long_side=100),
+    )
+
+    assert not cancelled
+    assert [r.error for r in results] == [None] * 4
+    for result in results:
+        saved = load_image(result.output).image
+        assert max(saved.size) == 100  # 横長も縦長も長辺が 100
+        r, g, b = saved.getpixel((10, 10))
+        assert abs(r - g) <= 3 and abs(g - b) <= 3
+    assert "4 枚を保存しました" in infos[-1]
+    assert not window.is_batch_running()
+    assert window.batch_action.isEnabled()
+
+
+def test_batch_reports_failures(window, qtbot, tmp_path, monkeypatch):
+    from image_editor.core.batch import BatchOptions
+    from image_editor.core.presets import Preset
+
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args[2]))
+    broken = tmp_path / "in" / "broken.png"
+    broken.parent.mkdir(parents=True)
+    broken.write_bytes(b"x")
+
+    run_batch_and_wait(
+        qtbot,
+        window,
+        [broken, *make_images(tmp_path / "in2", 1)],
+        tmp_path / "out",
+        BatchOptions(look=Preset(name="なし")),
+    )
+
+    assert "1 枚を保存しました" in infos[-1]
+    assert "1 枚は処理できませんでした" in infos[-1]
+    assert "broken.png" in infos[-1]
+
+
+def test_batch_cancel_from_progress_dialog(window, qtbot, tmp_path, monkeypatch):
+    from image_editor.core.batch import BatchOptions
+    from image_editor.core.presets import Preset
+
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args[2]))
+    sources = make_images(tmp_path / "in", 30, size=(1500, 1000))
+
+    with qtbot.waitSignal(window.batch_finished, timeout=60000) as blocker:
+        window.start_batch(sources, tmp_path / "out", BatchOptions(look=Preset(name="なし")))
+        window._batch_progress.canceled.emit()  # 「中止」を押す
+
+    results, cancelled = blocker.args
+    assert cancelled
+    assert len(results) < len(sources)
+    assert infos[-1].startswith("中止しました。")
+
+
+def test_batch_task_cancel_before_run(tmp_path):
+    from image_editor.core.batch import BatchOptions
+    from image_editor.core.presets import Preset
+    from image_editor.ui.worker import BatchTask
+
+    task = BatchTask(make_images(tmp_path / "in", 2), tmp_path / "out", BatchOptions(Preset("x")))
+    received = []
+    task.signals.finished.connect(lambda results, cancelled: received.append((results, cancelled)))
+
+    task.cancel()
+    task.run()
+
+    assert received == [([], True)]
+
+
+def test_batch_dialog_uses_current_look_and_image(loaded_window, qtbot, tmp_path, monkeypatch):
+    from image_editor.ui.batch_dialog import BatchDialog
+
+    panel = loaded_window.settings_panel
+    panel.brightness_slider.setValue(25)
+    panel.width_spin.setValue(200)
+    started = []
+    monkeypatch.setattr(
+        loaded_window,
+        "start_batch",
+        lambda sources, out, options: started.append((sources, out, options)),
+    )
+
+    def fake_exec(dialog):
+        assert dialog.sources() == [loaded_window.loaded.path]
+        assert dialog.resize_check.isChecked()
+        assert dialog.long_side_spin.value() == 200  # 今の出力の長辺
+        dialog.set_out_dir(tmp_path / "out")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(BatchDialog, "exec", fake_exec)
+
+    loaded_window.batch_action.trigger()
+
+    ((sources, out, options),) = started
+    assert sources == [loaded_window.loaded.path]
+    assert out == tmp_path / "out"
+    assert options.look.brightness == 25
+    assert options.long_side == 200
+    assert options.save == panel.save_options()
+
+
+def test_batch_dialog_cancel_does_nothing(window, monkeypatch):
+    from image_editor.ui.batch_dialog import BatchDialog
+
+    monkeypatch.setattr(BatchDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
+    window.batch_dialog()
+    assert not window.is_batch_running()

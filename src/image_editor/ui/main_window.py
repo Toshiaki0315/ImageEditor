@@ -1,6 +1,5 @@
 """メインウィンドウ。"""
 
-import os
 from pathlib import Path
 
 from PIL import Image
@@ -8,21 +7,26 @@ from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThreadPool, QTimer, py
 from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QScrollArea,
     QSplitter,
     QWidget,
 )
 
+from image_editor.core.batch import BatchOptions, BatchResult
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
     SaveOptions,
     UnsupportedImageError,
+    default_save_path,
+    is_same_file,
     is_supported,
     load_image,
 )
@@ -43,10 +47,11 @@ from image_editor.core.presets import (
     save_presets,
     upsert_preset,
 )
+from image_editor.ui.batch_dialog import BatchDialog
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.history import History
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
-from image_editor.ui.worker import SaveTask
+from image_editor.ui.worker import BatchTask, SaveTask
 
 WINDOW_TITLE = "Image Editor"
 INITIAL_SIZE = (1200, 800)
@@ -71,6 +76,8 @@ DISCARD_QUESTION = "保存していない変更があります。破棄してよ
 AUTO_PREVIEW_DELAY_MS = 300
 # 設定の変更が落ち着いてから履歴に積むまでの待ち時間（続けて変えた分は 1 回の操作にまとめる）
 HISTORY_DELAY_MS = 500
+# 画像を開いていないときの、一括処理の長辺の初期値
+DEFAULT_BATCH_LONG_SIDE = 2048
 # 押している間だけ加工前の画像を表示するキー（JIS 配列の ¥ キーも同じ位置にある）
 COMPARE_KEYS = (Qt.Key.Key_Backslash, Qt.Key.Key_yen)
 COMPARE_BADGE_TEXT = "加工前"
@@ -125,36 +132,12 @@ def store_save_options(preferences: QSettings, options: SaveOptions) -> None:
 SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
 
 
-def default_save_path(path: Path) -> Path:
-    """保存ダイアログの初期パス `<元の名前>_edited.<元の拡張子>` を返す。
-
-    すでにあれば `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
-    """
-    candidate = path.with_name(f"{path.stem}_edited{path.suffix}")
-    number = 2
-    while candidate.exists():
-        candidate = path.with_name(f"{path.stem}_edited_{number}{path.suffix}")
-        number += 1
-    return candidate
-
-
-def is_same_file(a: Path, b: Path) -> bool:
-    """2 つのパスが同じファイルを指すかを返す。
-
-    macOS のファイルシステムは大文字・小文字を区別しないので、実在するファイルは
-    os.path.samefile で判定し、まだ無いファイルは絶対パスを大文字・小文字を無視して比べる。
-    """
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return str(a.resolve()).casefold() == str(b.resolve()).casefold()
-
-
 class MainWindow(QMainWindow):
     """左に D&D エリア、右に設定パネル、下にステータスバーを持つメインウィンドウ。"""
 
     save_finished = pyqtSignal(object)  # Path
     save_failed = pyqtSignal(object, str)  # Path, エラーメッセージ
+    batch_finished = pyqtSignal(object, bool)  # list[BatchResult], 中止したか
 
     def __init__(self, parent: QWidget | None = None, preferences: QSettings | None = None) -> None:
         """preferences は保存の設定を残す先（省略時は default_preferences()）。"""
@@ -174,6 +157,9 @@ class MainWindow(QMainWindow):
         self._preview_factor = 1.0
         # 表示中のプレビューを描いたときの条件（変わったときだけ描き直す）
         self._rendered_key: tuple[object, ...] | None = None
+        # 実行中の一括処理と、その進み具合の表示
+        self._batch_task: BatchTask | None = None
+        self._batch_progress: QProgressDialog | None = None
         # 実行中の保存タスクと、そのときの設定
         self._save_task: SaveTask | None = None
         self._saving_settings: EditSettings | None = None
@@ -267,6 +253,10 @@ class MainWindow(QMainWindow):
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.triggered.connect(self.save_file_dialog)
         file_menu.addAction(self.save_action)
+
+        self.batch_action = QAction("まとめて処理…", self)
+        self.batch_action.triggered.connect(self.batch_dialog)
+        file_menu.addAction(self.batch_action)
 
         file_menu.addSeparator()
 
@@ -485,6 +475,94 @@ class MainWindow(QMainWindow):
         self._update_status(f"保存中… {path.name}")
         self._thread_pool.start(task)
         return True
+
+    # --- 一括処理 ---------------------------------------------------------------
+
+    def batch_dialog(self) -> None:
+        """一括処理のダイアログを開き、「開始」なら処理を始める。
+
+        かける加工は「今の加工」かプリセット。開いている画像があれば一覧に入れておく。
+        """
+        if self.is_busy():
+            return
+        panel = self.settings_panel
+        width, height = panel.width_spin.value(), panel.height_spin.value()
+        settings = panel.settings()
+        dialog = BatchDialog(
+            current_look=preset_from_settings("今の加工", settings),
+            presets=panel.presets(),
+            long_side=max(width, height) if self.loaded is not None else DEFAULT_BATCH_LONG_SIDE,
+            resize=settings.width is not None or settings.height is not None,
+            sources=[self.loaded.path] if self.loaded is not None else [],
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        out_dir = dialog.out_dir()
+        if out_dir is None or not dialog.sources():
+            return
+        self.start_batch(dialog.sources(), out_dir, dialog.options(panel.save_options()))
+
+    def start_batch(self, sources: list[Path], out_dir: Path, options: BatchOptions) -> bool:
+        """一括処理をワーカースレッドで始め、進み具合と「中止」を出す。始められたら True。"""
+        if self.is_busy() or not sources:
+            return False
+        task = BatchTask(sources, out_dir, options)
+        task.setAutoDelete(False)  # 完了通知を受け取るまで Python 側で保持する
+        progress = QProgressDialog("まとめて処理しています…", "中止", 0, len(sources), self)
+        progress.setWindowTitle("まとめて処理")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+
+        def on_cancel() -> None:
+            task.cancel()
+            progress.setLabelText("中止しています…（処理中の 1 枚が終わるまでお待ちください）")
+
+        def on_progress(done: int, total: int, name: str) -> None:
+            progress.setValue(done)
+            progress.setLabelText(f"{done + 1} / {total} 枚目を処理しています… {name}")
+
+        progress.canceled.connect(on_cancel)
+        task.signals.progress.connect(on_progress)
+        task.signals.finished.connect(
+            lambda results, cancelled: self._on_batch_finished(results, cancelled, out_dir)
+        )
+        self._batch_task = task
+        self._batch_progress = progress
+        self._update_actions()
+        self._thread_pool.start(task)
+        return True
+
+    def is_batch_running(self) -> bool:
+        """一括処理の実行中かを返す。"""
+        return self._batch_task is not None
+
+    def is_busy(self) -> bool:
+        """保存か一括処理の実行中かを返す。"""
+        return self.is_saving() or self.is_batch_running()
+
+    def _on_batch_finished(
+        self, results: list[BatchResult], cancelled: bool, out_dir: Path
+    ) -> None:
+        if self._batch_progress is not None:
+            self._batch_progress.close()
+        self._batch_task = None
+        self._batch_progress = None
+        self._update_actions()
+        saved = [r for r in results if r.output is not None]
+        failed = [r for r in results if r.error is not None]
+        head = "中止しました。" if cancelled else ""
+        message = f"{head}{len(saved)} 枚を保存しました。\n保存先: {out_dir}"
+        if failed:
+            lines = "\n".join(f"・{r.source.name}（{r.error}）" for r in failed[:10])
+            more = f"\n…ほか {len(failed) - 10} 枚" if len(failed) > 10 else ""
+            message += f"\n\n{len(failed)} 枚は処理できませんでした:\n{lines}{more}"
+        self._update_status(f"まとめて処理: {len(saved)} 枚を保存しました")
+        QMessageBox.information(self, "まとめて処理", message)
+        self.batch_finished.emit(results, cancelled)
 
     def is_saving(self) -> bool:
         """保存処理中かを返す。"""
@@ -741,10 +819,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     def _update_actions(self) -> None:
-        busy = self.is_saving()
+        busy = self.is_busy()
         enabled = self.loaded is not None and not busy
         self.save_action.setEnabled(enabled)
         self.open_action.setEnabled(not busy)
+        self.batch_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
         # まだ履歴に積んでいない変更があれば、それを元に戻せる
         pending = self.loaded is not None and (
@@ -758,8 +837,10 @@ class MainWindow(QMainWindow):
         self._update_actions()
 
     def closeEvent(self, event: QCloseEvent | None) -> None:
-        # 保存中のファイルが途中で切れないよう、完了を待ってから閉じる
-        if self.is_saving():
+        # 保存中のファイルが途中で切れないよう、完了を待ってから閉じる（一括処理は中止を求める）
+        if self._batch_task is not None:
+            self._batch_task.cancel()
+        if self.is_busy():
             self._thread_pool.waitForDone()
         super().closeEvent(event)
 
