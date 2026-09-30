@@ -267,9 +267,9 @@ class SettingsPanel(QWidget):
         save_form.addRow(self.keep_exif_check)
         save_form.addRow(self.keep_gps_check)
         save_header = QHBoxLayout()
-        save_header.addWidget(self.save_options_toggle)
-        save_header.addWidget(self.save_options_summary)
-        save_header.addStretch(1)  # 開いて要約を隠しても見出しを左に寄せる
+        # 要約は残りの幅を使い、開いて要約を隠しても見出しは左に寄せる
+        save_header.addWidget(self.save_options_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        save_header.addWidget(self.save_options_summary, 1)
         save_box = QWidget()
         save_layout = QVBoxLayout(save_box)
         save_layout.setContentsMargins(0, 0, 0, 0)

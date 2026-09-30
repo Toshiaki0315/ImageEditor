@@ -15,6 +15,7 @@ from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
+from image_editor.ui.settings_panel import ElidedLabel
 
 
 def test_window_opens(qtbot):
@@ -1008,8 +1009,13 @@ def test_panel_labels_are_not_cut_off(window, qtbot, size):
 
     assert panel.width() >= panel.minimumSizeHint().width()
     for label in panel.findChildren(QLabel):
-        if label.text() and label.isVisible():
-            assert label.width() >= label.sizeHint().width(), label.text()
+        if not (label.text() and label.isVisible()):
+            continue
+        if isinstance(label, ElidedLabel):
+            # 「保存の設定」の要約は、幅が足りなければ「…」で省略する（空にはならない）
+            assert label.width() > 0, label.text()
+            continue
+        assert label.width() >= label.sizeHint().width(), label.text()
 
 
 # --- 露出・設定パネルのスクロール -------------------------------------------------
