@@ -243,3 +243,72 @@ def test_cursor_changes_on_hover(qtbot, area):
     assert overlay.cursor().shape() == Qt.CursorShape.CrossCursor
     qtbot.mouseMove(overlay, QPoint(300, 5))  # 画像の外（余白）
     assert overlay.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+# --- 縦横比 -------------------------------------------------------------------
+
+
+def test_drag_keeps_aspect(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((1, 1))
+
+    drag(qtbot, overlay, at(200, 100), at(800, 300))
+
+    # 横に長いドラッグ → 幅 600 に合わせた正方形
+    assert overlay.crop() == CropRect(200, 100, 600, 600)
+
+
+def test_drag_keeps_aspect_at_image_edge(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((16, 9))
+
+    drag(qtbot, overlay, at(600, 400), QPoint(700, 500))  # 右下の外まで
+
+    rect = overlay.crop()
+    assert rect is not None
+    assert rect.x + rect.width <= 1200 and rect.y + rect.height <= 800
+    assert abs(rect.height - rect.width * 9 / 16) <= 1
+
+
+def test_handle_resize_keeps_aspect(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((4, 3))
+    overlay.set_crop(CropRect(200, 200, 400, 300))
+
+    drag(qtbot, overlay, at(600, 500), at(1000, 520))  # 右下のハンドルを右へ
+
+    assert overlay.crop() == CropRect(200, 200, 800, 600)
+
+
+def test_free_orientation_follows_drag(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((46, 62), free_orientation=True)
+
+    drag(qtbot, overlay, at(100, 100), at(720, 300))  # 横に長いドラッグ
+    landscape = overlay.crop()
+    drag(qtbot, overlay, at(900, 100), at(1000, 700))  # 縦に長いドラッグ
+    portrait = overlay.crop()
+
+    assert landscape is not None and landscape.width > landscape.height
+    assert portrait is not None and portrait.height > portrait.width
+
+
+def test_free_orientation_resize_keeps_orientation(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((46, 62), free_orientation=True)
+    overlay.set_crop(CropRect(100, 100, 460, 620))
+
+    drag(qtbot, overlay, at(560, 720), at(700, 730))  # 右下のハンドルを横へ
+
+    rect = overlay.crop()
+    assert rect is not None and rect.height > rect.width
+
+
+def test_move_ignores_aspect(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_aspect((1, 1))
+    overlay.set_crop(CropRect(200, 200, 300, 300))
+
+    drag(qtbot, overlay, at(300, 300), at(400, 350))
+
+    assert overlay.crop() == CropRect(300, 250, 300, 300)

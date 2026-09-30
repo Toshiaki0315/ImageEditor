@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
 
     def _on_settings_changed(self, settings: EditSettings) -> None:
         overlay = self.drop_area.crop_overlay
+        overlay.set_aspect(*self.settings_panel.crop_aspect())
         # ドラッグ中の変更はオーバーレイ自身が発生源なので書き戻さない
         if not overlay.is_dragging():
             overlay.set_crop(settings.crop)

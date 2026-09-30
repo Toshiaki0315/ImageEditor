@@ -4,7 +4,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
-from image_editor.core.transform import CropRect
+from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.settings_panel import SettingsPanel
 
 
@@ -678,3 +678,187 @@ def test_corner_slider_disabled_without_image(qtbot):
     qtbot.addWidget(widget)
     select_shape(widget, ShapeType.ROUNDED)
     assert not widget.corner_slider.isEnabled()
+
+
+# --- トリミングの縦横比 ---------------------------------------------------------
+
+
+def select_aspect(panel: SettingsPanel, aspect: AspectRatio) -> None:
+    panel.aspect_combo.setCurrentIndex(panel.aspect_combo.findData(aspect))
+
+
+def crop_values(panel: SettingsPanel) -> tuple[int, int, int, int]:
+    return (
+        panel.crop_x_spin.value(),
+        panel.crop_y_spin.value(),
+        panel.crop_width_spin.value(),
+        panel.crop_height_spin.value(),
+    )
+
+
+def test_aspect_combo_items(panel):
+    labels = [panel.aspect_combo.itemText(i) for i in range(panel.aspect_combo.count())]
+    assert labels == ["自由", "1:1", "4:3", "3:2", "16:9", "フレーム・円に合わせる"]
+    assert panel.aspect_combo.currentText() == "自由"
+    assert panel.crop_aspect() == (None, False)
+    # 「フレーム・円に合わせる」はユーザーが選べない
+    follow = panel.aspect_combo.model().item(panel.aspect_combo.count() - 1)
+    assert not follow.isEnabled()
+
+
+def test_portrait_check_only_for_oriented_ratio(panel):
+    assert not panel.portrait_check.isEnabled()  # 自由
+    select_aspect(panel, AspectRatio.SQUARE)
+    assert not panel.portrait_check.isEnabled()
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    assert panel.portrait_check.isEnabled()
+
+
+def test_crop_aspect_follows_selection(panel):
+    select_aspect(panel, AspectRatio.RATIO_16_9)
+    assert panel.crop_aspect() == ((16, 9), False)
+
+    panel.portrait_check.setChecked(True)
+    assert panel.crop_aspect() == ((9, 16), False)
+
+
+def test_selecting_aspect_fits_existing_range(panel, qtbot):
+    panel.set_crop(CropRect(0, 0, 400, 200))
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        select_aspect(panel, AspectRatio.SQUARE)
+
+    # 範囲の中央を 1:1 に直す
+    assert blocker.args[0].crop == CropRect(100, 0, 200, 200)
+    assert crop_values(panel) == (100, 0, 200, 200)
+
+
+def test_portrait_toggle_fits_range(panel):
+    panel.set_crop(CropRect(0, 0, 400, 300))
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    assert crop_values(panel) == (0, 0, 400, 300)
+
+    panel.portrait_check.setChecked(True)
+
+    assert crop_values(panel) == (87, 0, 225, 300)  # 中央 ((400 - 225) // 2)
+
+
+def test_selecting_aspect_without_range_does_nothing(panel):
+    select_aspect(panel, AspectRatio.SQUARE)
+    assert panel.settings().crop is None
+
+
+def test_width_input_keeps_aspect(panel):
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    panel.set_crop(CropRect(0, 0, 200, 150))
+
+    panel.crop_width_spin.setValue(100)
+
+    assert crop_values(panel) == (0, 0, 100, 75)
+
+
+def test_height_input_keeps_aspect(panel):
+    select_aspect(panel, AspectRatio.RATIO_16_9)
+    panel.set_crop(CropRect(0, 0, 160, 90))
+
+    panel.crop_height_spin.setValue(180)
+
+    assert crop_values(panel) == (0, 0, 320, 180)
+
+
+def test_size_input_at_image_edge_keeps_aspect(panel):
+    # 400x300 の画像で (200, 0) から幅 400 → 右端で収まるよう縮める
+    select_aspect(panel, AspectRatio.SQUARE)
+    panel.set_crop(CropRect(200, 0, 100, 100))
+
+    panel.crop_width_spin.setValue(400)
+
+    assert crop_values(panel) == (200, 0, 200, 200)
+
+
+def test_position_input_keeps_size(panel):
+    select_aspect(panel, AspectRatio.SQUARE)
+    panel.set_crop(CropRect(0, 0, 200, 200))
+
+    panel.crop_x_spin.setValue(350)  # はみ出す分だけ戻す
+
+    assert crop_values(panel) == (200, 0, 200, 200)
+
+
+def test_set_crop_is_fitted_to_aspect(panel):
+    select_aspect(panel, AspectRatio.SQUARE)
+    panel.set_crop(CropRect(10, 10, 300, 100))
+    assert crop_values(panel) == (10, 10, 100, 100)
+
+
+def test_free_aspect_keeps_input(panel):
+    panel.set_crop(CropRect(10, 10, 300, 100))
+    panel.crop_width_spin.setValue(50)
+    assert crop_values(panel) == (10, 10, 50, 100)
+
+
+def test_frame_locks_aspect(panel):
+    select_aspect(panel, AspectRatio.RATIO_16_9)
+    panel.set_crop(CropRect(0, 0, 400, 300))
+
+    select_frame(panel, FrameType.POLAROID)
+
+    assert panel.aspect_combo.currentText() == "フレーム・円に合わせる"
+    assert not panel.aspect_combo.isEnabled()
+    assert not panel.portrait_check.isEnabled()
+    assert panel.crop_aspect() == ((79, 79), False)
+    # 16:9 に直った範囲 (0, 0, 400, 225) の中央を、写真部分の比 (正方形) に直す
+    assert crop_values(panel) == (87, 0, 225, 225)
+
+    select_frame(panel, FrameType.NONE)
+
+    # 固定を解くと元の選択に戻る
+    assert panel.aspect_combo.currentText() == "16:9"
+    assert panel.aspect_combo.isEnabled()
+
+
+def test_instax_aspect_follows_range_orientation(panel):
+    select_frame(panel, FrameType.INSTAX_MINI)
+    # 範囲がなければ画像（横長）に合わせる。向きはドラッグで自由に選べる
+    assert panel.crop_aspect() == ((62, 46), True)
+
+    panel.set_crop(CropRect(0, 0, 100, 250))
+
+    aspect, free = panel.crop_aspect()
+    assert aspect == (46, 62)
+    assert free
+    width, height = crop_values(panel)[2:]
+    assert abs(height - width * 62 / 46) <= 1
+
+
+def test_circle_locks_aspect(panel):
+    select_shape(panel, ShapeType.CIRCLE)
+    assert panel.crop_aspect() == ((1, 1), False)
+    assert not panel.aspect_combo.isEnabled()
+
+    select_shape(panel, ShapeType.ROUNDED)
+    assert panel.crop_aspect() == (None, False)
+    assert panel.aspect_combo.isEnabled()
+
+
+def test_aspect_is_reset_on_new_image(panel):
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    panel.portrait_check.setChecked(True)
+
+    panel.set_image_size((200, 200))
+
+    assert panel.aspect_combo.currentText() == "自由"
+    assert not panel.portrait_check.isChecked()
+    assert panel.aspect_combo.isEnabled()
+
+
+def test_aspect_controls_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not widget.aspect_combo.isEnabled()
+    assert not widget.portrait_check.isEnabled()
+
+
+def test_aspect_does_not_count_as_change(panel):
+    select_aspect(panel, AspectRatio.RATIO_4_3)
+    assert panel.settings() == EditSettings()
