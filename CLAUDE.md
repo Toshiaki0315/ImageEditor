@@ -49,6 +49,7 @@ src/image_editor/
     crop_overlay.py      # プレビュー上のドラッグ範囲選択
     qt_image.py          # PIL.Image <-> QPixmap 変換
     worker.py            # 原寸処理・保存のワーカー (QRunnable)
+    history.py           # アンドゥ／リドゥの履歴（Qt に依存しない）
 tests/
   core/                  # core は必ずユニットテストを書く
   ui/                    # pytest-qt によるスモークテスト
