@@ -12,6 +12,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import ShapeType
+from image_editor.core.text import TextFont, TextPosition, TextSettings
 
 PRESETS_VERSION = 1
 PRESET_NAME_MAX = 50
@@ -25,7 +26,7 @@ class PresetError(Exception):
 class Preset:
     """名前付きの加工の組み合わせ。
 
-    テイスト・色の調整・ディテール（シャープ・ぼかし・ノイズ除去）・フレーム・形を持つ。
+    テイスト・色の調整・ディテール（シャープ・ぼかし・ノイズ除去）・フレーム・形・文字を持つ。
     サイズ変更・トリミング・回転は画像ごとの
     設定なので含めない。
     """
@@ -45,6 +46,7 @@ class Preset:
     frame: FrameType = FrameType.NONE
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = EditSettings.corner_radius
+    text: TextSettings = TextSettings()
 
 
 # プリセットが持つ設定の項目（name 以外。EditSettings の同名の項目に対応する）
@@ -128,8 +130,54 @@ def _preset_to_dict(preset: Preset) -> dict[str, Any]:
     data: dict[str, Any] = {"name": preset.name}
     for key in PRESET_FIELDS:
         value = getattr(preset, key)
-        data[key] = value.value if key in _ENUM_FIELDS else value
+        if key == "text":
+            data[key] = _text_to_dict(value)
+        else:
+            data[key] = value.value if key in _ENUM_FIELDS else value
     return data
+
+
+def _text_to_dict(settings: TextSettings) -> dict[str, Any]:
+    return {
+        "text": settings.text,
+        "font": settings.font.name,
+        "size": settings.size,
+        "color": list(settings.color),
+        "opacity": settings.opacity,
+        "position": settings.position.value,
+    }
+
+
+def _text_from_dict(item: object) -> TextSettings | None:
+    """文字の設定を辞書から作る。壊れていれば None（項目がなければ既定値）。"""
+    if not isinstance(item, dict):
+        return None
+    default = TextSettings()
+    try:
+        text = item.get("text", default.text)
+        color = item.get("color", list(default.color))
+        if not isinstance(text, str) or not isinstance(color, list) or len(color) != 3:
+            return None
+        if not all(isinstance(c, int) and not isinstance(c, bool) for c in color):
+            return None
+        opacity = item.get("opacity", default.opacity)
+        size = item.get("size", default.size)
+        if isinstance(opacity, bool) or isinstance(size, bool):
+            return None
+        return TextSettings(
+            text=text,
+            font=TextFont[item["font"]] if "font" in item else default.font,
+            size=float(size),
+            color=(
+                min(max(color[0], 0), 255),
+                min(max(color[1], 0), 255),
+                min(max(color[2], 0), 255),
+            ),
+            opacity=int(opacity),
+            position=TextPosition(item["position"]) if "position" in item else default.position,
+        )
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def _preset_from_dict(item: object) -> Preset | None:
@@ -146,7 +194,12 @@ def _preset_from_dict(item: object) -> Preset | None:
             if key not in item:
                 continue
             raw = item[key]
-            if key in _ENUM_FIELDS:
+            if key == "text":
+                text = _text_from_dict(raw)
+                if text is None:
+                    return None
+                values[key] = text
+            elif key in _ENUM_FIELDS:
                 values[key] = _ENUM_FIELDS[key](raw)
             elif isinstance(getattr(default, key), float):
                 values[key] = float(raw)

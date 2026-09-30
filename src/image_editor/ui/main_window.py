@@ -52,6 +52,7 @@ from image_editor.ui.batch_dialog import BatchDialog
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.history import History
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
+from image_editor.ui.text_dialog import TextDialog
 from image_editor.ui.worker import BatchTask, SaveTask
 
 WINDOW_TITLE = "Image Editor"
@@ -210,6 +211,10 @@ class MainWindow(QMainWindow):
             lambda expanded: self._preferences.setValue(PREF_DETAIL_EXPANDED, expanded)
         )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
+        # 文字・透かしのダイアログ（開いたまま調整でき、変更はすぐ設定に反映する）
+        self.text_dialog = TextDialog(self)
+        self.text_dialog.settings_changed.connect(self.settings_panel.set_text_settings)
+        self.settings_panel.text_dialog_requested.connect(self.open_text_dialog)
         # プリセット（名前付きの加工の組み合わせ）
         self._presets_path = default_presets_path()
         self.settings_panel.preset_save_requested.connect(self.save_preset_dialog)
@@ -288,6 +293,12 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self.redo)
         edit_menu.addAction(self.redo_action)
+
+        edit_menu.addSeparator()
+        self.text_action = QAction("文字・透かし…", self)
+        self.text_action.setShortcut(QKeySequence("Ctrl+T"))
+        self.text_action.triggered.connect(self.open_text_dialog)
+        edit_menu.addAction(self.text_action)
 
         view_menu = self.menuBar().addMenu("表示")
 
@@ -390,6 +401,15 @@ class MainWindow(QMainWindow):
         self._show_histogram()
 
     # --- 加工前との比較 ------------------------------------------------------
+
+    def open_text_dialog(self) -> None:
+        """文字・透かしのダイアログを開く（今の設定を表示する）。"""
+        if self.loaded is None:
+            return
+        self.text_dialog.set_settings(self.settings_panel.text_settings())
+        self.text_dialog.show()
+        self.text_dialog.raise_()
+        self.text_dialog.activateWindow()
 
     def is_histogram_shown(self) -> bool:
         """プレビューにヒストグラムを重ねて表示する設定かを返す。"""
@@ -759,6 +779,8 @@ class MainWindow(QMainWindow):
     # --- 内部 -----------------------------------------------------------------
 
     def _on_settings_changed(self, settings: EditSettings) -> None:
+        # アンドゥ・プリセット・画像の読み込みで文字が変わったら、ダイアログの表示も合わせる
+        self.text_dialog.set_settings(settings.text)
         if self.loaded is not None and not self._restoring:
             # 続けて変えた分は、落ち着いてから 1 回の操作として履歴に積む
             self._history_timer.start()
@@ -810,6 +832,7 @@ class MainWindow(QMainWindow):
             settings.sharpen,
             settings.blur,
             settings.denoise,
+            settings.text,
             crop,
             frame,
             shape,
@@ -865,6 +888,7 @@ class MainWindow(QMainWindow):
         enabled = self.loaded is not None and not busy
         self.save_action.setEnabled(enabled)
         self.open_action.setEnabled(not busy)
+        self.text_action.setEnabled(self.loaded is not None)
         self.batch_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
         # まだ履歴に積んでいない変更があれば、それを元に戻せる

@@ -6,11 +6,12 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
-from image_editor.core import effects, filters, frames, shapes, transform
+from image_editor.core import effects, filters, frames, shapes, text, transform
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FRAME_COLOR, FrameType
 from image_editor.core.histogram import Histogram, compute_histogram
 from image_editor.core.shapes import ShapeType
+from image_editor.core.text import TextPosition, TextSettings
 from image_editor.core.transform import CropRect, Orientation
 
 PREVIEW_MAX_SIDE = 1600
@@ -37,6 +38,7 @@ class EditSettings:
     blur: int = 0  # ぼかし 0〜100（0 = なし）
     denoise: int = 0  # ノイズ除去 0〜100（0 = なし）
     frame: FrameType = FrameType.NONE
+    text: TextSettings = TextSettings()  # 文字・透かし（空なら描かない）
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = shapes.CORNER_RADIUS_DEFAULT  # 角丸の半径（短辺に対する % 0〜50）
 
@@ -130,6 +132,18 @@ def render_preview_with_histogram(
     histogram = compute_histogram(photo, shape_mask)
     if trimmed:
         rendered = _apply_shape_and_frame(rendered, settings)
+    elif not settings.text.is_empty():
+        # 全体表示ではフレームを出さないので、写真の上の文字だけを切り抜く範囲に描く
+        box = (
+            (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)
+            if rect is not None
+            else None
+        )
+        if (
+            settings.text.position is not TextPosition.FRAME_MARGIN
+            or settings.frame is FrameType.NONE
+        ):
+            rendered = text.draw_text(rendered, _photo_text(settings), box=box)
     return rendered, histogram
 
 
@@ -215,17 +229,33 @@ def make_preview(
 
 
 def _apply_shape_and_frame(image: Image.Image, settings: EditSettings) -> Image.Image:
-    """形で切り抜き、フレームを付ける。
+    """形で切り抜き、文字を描き、フレームを付ける。
 
-    形の外側は、フレームがあればフレームの白で塗り、なければ透明にする。
+    形の外側は、フレームがあればフレームの白で塗り、なければ透明にする。文字は写真の上なら
+    フレームの前に、フレームの余白ならフレームを付けた後にその余白へ描く（大きさの基準は
+    どちらも写真の短辺）。
     """
     has_frame = settings.frame is not FrameType.NONE
     if settings.shape is not ShapeType.RECTANGLE:
         fill = FRAME_COLOR if has_frame else None
         image = shapes.apply_shape(image, settings.shape, settings.corner_radius, fill)
+    on_margin = settings.text.position is TextPosition.FRAME_MARGIN and has_frame
+    if not on_margin:
+        image = text.draw_text(image, _photo_text(settings))
     if has_frame:
+        photo_size = image.size
         image = frames.add_frame(image, settings.frame)
+        if on_margin:
+            box = frames.margin_box(photo_size, settings.frame)
+            image = text.draw_text(image, settings.text, box=box, reference=min(photo_size))
     return image
+
+
+def _photo_text(settings: EditSettings) -> TextSettings:
+    """写真の上に描く文字の設定（フレームがないのに「フレームの余白」なら下中央に描く）。"""
+    if settings.text.position is TextPosition.FRAME_MARGIN:
+        return replace(settings.text, position=TextPosition.BOTTOM)
+    return settings.text
 
 
 def _apply_detail(

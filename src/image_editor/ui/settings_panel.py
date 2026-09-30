@@ -60,6 +60,7 @@ from image_editor.core.shapes import (
     CORNER_RADIUS_MIN,
     ShapeType,
 )
+from image_editor.core.text import TextSettings
 from image_editor.core.transform import (
     MAX_SIZE,
     MIN_SIZE,
@@ -117,6 +118,7 @@ class SettingsPanel(QWidget):
     compare_toggled = pyqtSignal(bool)  # 「加工前」ボタンを押している間だけ True
     preset_save_requested = pyqtSignal()  # 「今の加工を保存…」
     preset_delete_requested = pyqtSignal(str)  # 削除するプリセットの名前
+    text_dialog_requested = pyqtSignal()  # 「文字…」
     trim_view_toggled = pyqtSignal(bool)  # True: 切り抜き後の表示、False: 全体表示
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -201,6 +203,12 @@ class SettingsPanel(QWidget):
         filter_row = QHBoxLayout()
         filter_row.addWidget(self.filter_combo, 1)
         filter_row.addWidget(self.preset_button)
+        # 文字・透かしは専用のダイアログで設定する（パネルを高くしない）
+        self.text_button = QToolButton()
+        self.text_button.setText("文字…")
+        self.text_button.setToolTip("文字・透かしを入れる（⌘T）")
+        filter_row.addWidget(self.text_button)
+        self._text = TextSettings()
         filter_form.addRow(filter_row)
         filter_form.addRow("フレーム", self.frame_combo)
         filter_form.addRow("形", self.shape_combo)
@@ -382,6 +390,7 @@ class SettingsPanel(QWidget):
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.keep_exif_check.toggled.connect(lambda _: self._on_save_options_changed())
         self.keep_gps_check.toggled.connect(lambda _: self._on_save_options_changed())
+        self.text_button.clicked.connect(self.text_dialog_requested)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
         self.compare_button.pressed.connect(lambda: self.compare_toggled.emit(True))
@@ -412,6 +421,7 @@ class SettingsPanel(QWidget):
             self.portrait_check.setChecked(False)
             self.shape_combo.setCurrentIndex(0)
             self.corner_slider.reset()
+            self._text = TextSettings()
             for slider in self._adjustment_sliders():
                 slider.reset()
             self.trim_button.setChecked(False)
@@ -462,6 +472,7 @@ class SettingsPanel(QWidget):
             frame=self.frame(),
             shape=self.shape(),
             corner_radius=self.corner_slider.value(),
+            text=self._text,
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -555,6 +566,7 @@ class SettingsPanel(QWidget):
             self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
             self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
             self.corner_slider.setValue(settings.corner_radius)
+            self._text = settings.text
             self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
             self.brightness_slider.setValue(settings.brightness)
             self.contrast_slider.setValue(settings.contrast)
@@ -659,6 +671,17 @@ class SettingsPanel(QWidget):
                 lambda _=False, name=preset.name: self.preset_delete_requested.emit(name)
             )
 
+    def text_settings(self) -> TextSettings:
+        """今の文字・透かしの設定を返す。"""
+        return self._text
+
+    def set_text_settings(self, settings: TextSettings) -> None:
+        """文字・透かしの設定を変える（変われば settings_changed を発行する）。"""
+        if self._image_size is None or settings == self._text:
+            return
+        self._text = settings
+        self._emit_changed()
+
     def presets(self) -> list[Preset]:
         """「プリセット」メニューに出している一覧を返す。"""
         return list(self._presets)
@@ -677,6 +700,7 @@ class SettingsPanel(QWidget):
             self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
             self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
             self.corner_slider.setValue(settings.corner_radius)
+            self._text = settings.text
             self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
             self.brightness_slider.setValue(settings.brightness)
             self.contrast_slider.setValue(settings.contrast)
