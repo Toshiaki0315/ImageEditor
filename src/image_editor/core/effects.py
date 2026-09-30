@@ -1,10 +1,11 @@
-"""フィルターの前後にかける効果（露出・明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化）。"""
+"""フィルターの前後にかける効果（露出・明るさ・コントラスト・色温度・彩度・ディテール・周辺減光・
+経年劣化）。"""
 
 from __future__ import annotations
 
 import math
 
-from PIL import Image, ImageChops, ImageEnhance
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
 from image_editor.core.filters import add_grain
 
@@ -55,6 +56,113 @@ CONTRAST_MIN_SLOPE = 0.5  # -100 のとき、中間の灰色からの差をこ�
 EXPOSURE_MIN = -5.0
 EXPOSURE_MAX = 5.0
 EXPOSURE_STEP = 0.1
+
+# ディテール（シャープ・ぼかし・ノイズ除去）。半径は短辺に比例させ、縮小プレビューと原寸で
+# 効き方をそろえる
+DETAIL_MIN = 0
+DETAIL_MAX = 100
+SHARPEN_RADIUS_RATIO = 0.0012  # アンシャープマスクの半径（短辺に対する比率）
+# 半径の下限（px）。小さい画像でも効くようにする。大きい画像の縮小プレビュー（短辺 1200px 程度）
+# では比率の半径がこれを上回るので、プレビューと原寸の効き方の比例は崩れない
+SHARPEN_MIN_RADIUS = 1.0
+SHARPEN_MAX_PERCENT = 250  # 100 のときの強さ (%)
+SHARPEN_THRESHOLD = 2  # これより小さい明暗差は強調しない（ざらつきを抑える）
+BLUR_MAX_RADIUS_RATIO = 0.01  # 100 のときのガウスぼかしの半径（短辺に対する比率）
+DENOISE_RADIUS_RATIO = 0.002  # なめらかにするぼかしの半径（短辺に対する比率）
+DENOISE_EDGE_THRESHOLD = 40  # ぼかしとの差がこれ以上の部分は輪郭とみなして残す
+
+
+def sharpen(
+    image: Image.Image,
+    amount: int,
+    reference: float | None = None,
+    output: float | None = None,
+) -> Image.Image:
+    """輪郭をくっきりさせた新しい画像を返す（入力画像は変更しない）。
+
+    amount は 0〜100（0 は変化なし）。アンシャープマスクの半径は短辺に比例させる
+    （reference を渡すと、画像の短辺の代わりにその長さを基準にする）。
+    output は保存する写真の短辺。縮小プレビューで渡すと、保存時の半径（下限込み）を
+    reference / output 倍に換算して、保存結果と同じ効き方にする。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("シャープ", amount, DETAIL_MIN, DETAIL_MAX)
+    if amount == 0:
+        return image.copy()
+    rgb, alpha = _split_rgb(image)
+    mask = ImageFilter.UnsharpMask(
+        radius=_sharpen_radius(min(rgb.size) if reference is None else reference, output),
+        percent=round(SHARPEN_MAX_PERCENT * amount / DETAIL_MAX),
+        threshold=SHARPEN_THRESHOLD,
+    )
+    return _merge_alpha(rgb.filter(mask), alpha)
+
+
+def blur(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
+    """全体をぼかした新しい画像を返す（入力画像は変更しない）。
+
+    amount は 0〜100（0 は変化なし）。ガウスぼかしの半径は短辺に比例させる（100 で短辺の 1%。
+    reference を渡すと、画像の短辺の代わりにその長さを基準にする）。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("ぼかし", amount, DETAIL_MIN, DETAIL_MAX)
+    if amount == 0:
+        return image.copy()
+    rgb, alpha = _split_rgb(image)
+    radius = _detail_radius(rgb, BLUR_MAX_RADIUS_RATIO * amount / DETAIL_MAX, reference)
+    return _merge_alpha(rgb.filter(ImageFilter.GaussianBlur(radius)), alpha)
+
+
+def denoise(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
+    """輪郭を残してざらつきをなめらかにした新しい画像を返す（入力画像は変更しない）。
+
+    amount は 0〜100（0 は変化なし）。ぼかした画像との差が小さい（なめらかな）部分ほど
+    ぼかした画像を混ぜ、差が大きい輪郭は元のまま残す。ぼかしの半径は短辺に比例させる
+    （reference を渡すと、画像の短辺の代わりにその長さを基準にする）。
+    RGB にのみ適用し、アルファは元のまま戻す。
+    """
+    _check_amount("ノイズ除去", amount, DETAIL_MIN, DETAIL_MAX)
+    if amount == 0:
+        return image.copy()
+    rgb, alpha = _split_rgb(image)
+    radius = _detail_radius(rgb, DENOISE_RADIUS_RATIO, reference)
+    smooth = rgb.filter(ImageFilter.GaussianBlur(radius))
+    difference = ImageChops.difference(rgb, smooth).convert("L")
+    strength = amount / DETAIL_MAX
+    # 差が小さいほどぼかした画像を多く混ぜ、しきい値に向かってなめらかに元の画像に戻す
+    weight = difference.point(
+        [round(255 * strength * _smooth_falloff(v / DENOISE_EDGE_THRESHOLD)) for v in range(256)]
+    )
+    return _merge_alpha(Image.composite(smooth, rgb, weight), alpha)
+
+
+def _sharpen_radius(reference: float, output: float | None) -> float:
+    """シャープの半径。保存時の半径（比率の半径と下限の大きいほう）を表示の縮尺に換算する。"""
+    output = reference if output is None else output
+    saved = max(SHARPEN_MIN_RADIUS, output * SHARPEN_RADIUS_RATIO)
+    return saved * reference / output
+
+
+def _smooth_falloff(t: float) -> float:
+    """t = 0 で 1、t = 1 以上で 0 になり、その間はなめらかに下がる（smoothstep の逆）。"""
+    t = min(max(t, 0.0), 1.0)
+    return 1 - t * t * (3 - 2 * t)
+
+
+def _detail_radius(image: Image.Image, ratio: float, reference: float | None) -> float:
+    """基準の長さ（省略時は画像の短辺）に比例した半径（px）。"""
+    return (min(image.size) if reference is None else reference) * ratio
+
+
+def _split_rgb(image: Image.Image) -> tuple[Image.Image, Image.Image | None]:
+    alpha = image.getchannel("A") if image.mode == "RGBA" else None
+    return image.convert("RGB"), alpha
+
+
+def _merge_alpha(rgb: Image.Image, alpha: Image.Image | None) -> Image.Image:
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:

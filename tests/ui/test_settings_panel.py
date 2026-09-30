@@ -1379,3 +1379,70 @@ def test_preset_button_disabled_without_image(qtbot):
     widget = SettingsPanel()
     qtbot.addWidget(widget)
     assert not widget.preset_button.isEnabled()
+
+
+# --- ディテール（シャープ・ぼかし・ノイズ除去） ---------------------------------------
+
+
+def test_detail_defaults_and_collapsed(panel):
+    assert not panel.is_detail_expanded()
+    assert panel.detail_summary.text() == "なし"
+    for slider in (panel.sharpen_slider, panel.blur_slider, panel.denoise_slider):
+        assert (slider.minimum(), slider.maximum(), slider.value()) == (0, 100, 0)
+        assert not slider.isVisibleTo(panel)  # 閉じている間は出さない
+    # 見出しは「加工をリセット」と同じ行
+    assert panel.detail_toggle.y() == pytest.approx(panel.reset_adjustments_button.y(), abs=6)
+
+
+def test_detail_toggle_shows_sliders(panel, qtbot):
+    with qtbot.waitSignal(panel.detail_expanded_changed) as blocker:
+        panel.detail_toggle.click()
+
+    assert blocker.args == [True]
+    assert panel.sharpen_slider.isVisibleTo(panel)
+    assert panel.denoise_slider.isVisibleTo(panel)
+
+
+def test_detail_sliders_update_settings_and_summary(panel, qtbot):
+    panel.set_detail_expanded(True)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.sharpen_slider.setValue(20)
+    panel.denoise_slider.setValue(10)
+
+    assert blocker.args[0].sharpen == 20
+    settings = panel.settings()
+    assert (settings.sharpen, settings.blur, settings.denoise) == (20, 0, 10)
+    assert panel.sharpen_value_label.text() == "20"
+    assert panel.detail_summary.text() == "シャープ 20・ノイズ除去 10"
+
+
+def test_detail_reset_and_double_click(panel, qtbot):
+    panel.set_detail_expanded(True)
+    panel.blur_slider.setValue(30)
+    qtbot.mouseDClick(panel.blur_slider, Qt.MouseButton.LeftButton)
+    assert panel.blur_slider.value() == 0
+
+    panel.sharpen_slider.setValue(40)
+    panel.reset_adjustments()
+    assert panel.sharpen_slider.value() == 0
+    assert panel.detail_summary.text() == "なし"
+
+
+def test_detail_restore_and_preset(panel):
+    panel.sharpen_slider.setValue(15)
+    state = panel.snapshot()
+    panel.set_image_size((400, 300))
+
+    panel.restore(state)
+    assert panel.settings().sharpen == 15
+
+    panel.apply_preset(Preset(name="x", blur=12, denoise=34))
+    settings = panel.settings()
+    assert (settings.sharpen, settings.blur, settings.denoise) == (0, 12, 34)
+
+
+def test_detail_is_reset_on_new_image(panel):
+    panel.denoise_slider.setValue(50)
+    panel.set_image_size((200, 100))
+    assert panel.denoise_slider.value() == 0

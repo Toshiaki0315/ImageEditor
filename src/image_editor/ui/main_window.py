@@ -88,6 +88,7 @@ PREF_JPEG_QUALITY = "save/jpeg_quality"
 PREF_KEEP_EXIF = "save/keep_exif"
 PREF_KEEP_GPS = "save/keep_gps"
 PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
+PREF_DETAIL_EXPANDED = "panel/detail_expanded"  # 設定パネルの「ディテール」を開いているか
 
 
 PRESETS_FILE = Path.home() / "Library" / "Application Support" / "ImageEditor" / "presets.json"
@@ -197,6 +198,12 @@ class MainWindow(QMainWindow):
         )
         self.settings_panel.save_options_expanded_changed.connect(
             lambda expanded: self._preferences.setValue(PREF_SAVE_OPTIONS_EXPANDED, expanded)
+        )
+        self.settings_panel.set_detail_expanded(
+            bool(self._preferences.value(PREF_DETAIL_EXPANDED, False, type=bool))
+        )
+        self.settings_panel.detail_expanded_changed.connect(
+            lambda expanded: self._preferences.setValue(PREF_DETAIL_EXPANDED, expanded)
         )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
         # プリセット（名前付きの加工の組み合わせ）
@@ -768,6 +775,9 @@ class MainWindow(QMainWindow):
             settings.contrast,
             settings.vignette,
             settings.aging,
+            settings.sharpen,
+            settings.blur,
+            settings.denoise,
             crop,
             frame,
             shape,
