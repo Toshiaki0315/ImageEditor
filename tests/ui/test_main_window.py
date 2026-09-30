@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
 
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
@@ -1550,3 +1550,142 @@ def test_undo_disabled_while_saving(loaded_window, qtbot, tmp_path):
         assert loaded_window.save_to(tmp_path / "out.png")
         assert not loaded_window.undo_action.isEnabled()
     assert loaded_window.undo_action.isEnabled()
+
+
+# --- 加工前との比較 -------------------------------------------------------------
+
+RED = (220, 60, 30)
+
+
+def make_gray(window):
+    window.settings_panel.saturation_slider.setValue(-100)
+    window.update_preview()
+    assert len(set(preview_pixel(window, 50, 150))) == 1
+
+
+def test_compare_shows_before_image(loaded_window):
+    make_gray(loaded_window)
+
+    loaded_window.set_comparing(True)
+
+    assert loaded_window.is_comparing()
+    assert preview_pixel(loaded_window, 50, 150) == RED
+    assert loaded_window.drop_area.badge_text() == "加工前"
+    # 設定は変わらない
+    assert loaded_window.settings_panel.saturation_slider.value() == -100
+
+    loaded_window.set_comparing(False)
+
+    assert len(set(preview_pixel(loaded_window, 50, 150))) == 1
+    assert loaded_window.drop_area.badge_text() is None
+
+
+def test_compare_button_while_pressed(loaded_window, qtbot):
+    make_gray(loaded_window)
+    button = loaded_window.settings_panel.compare_button
+
+    qtbot.mousePress(button, Qt.MouseButton.LeftButton)
+    assert preview_pixel(loaded_window, 50, 150) == RED
+    qtbot.mouseRelease(button, Qt.MouseButton.LeftButton)
+
+    assert not loaded_window.is_comparing()
+    assert len(set(preview_pixel(loaded_window, 50, 150))) == 1
+
+
+def activate(window, qtbot):
+    window.activateWindow()
+    qtbot.waitUntil(window.isActiveWindow, timeout=2000)
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Backslash, Qt.Key.Key_yen])
+def test_compare_key_while_pressed(loaded_window, qtbot, key):
+    activate(loaded_window, qtbot)
+    make_gray(loaded_window)
+    spin = loaded_window.settings_panel.width_spin
+    spin.setFocus()
+
+    qtbot.keyPress(spin, key)
+    assert loaded_window.is_comparing()
+    assert preview_pixel(loaded_window, 50, 150) == RED
+    qtbot.keyRelease(spin, key)
+
+    assert not loaded_window.is_comparing()
+    assert spin.value() == 400  # 数値欄に文字として入らない
+
+
+def test_compare_key_auto_repeat_is_ignored(loaded_window, qtbot):
+    from PyQt6.QtGui import QKeyEvent
+
+    activate(loaded_window, qtbot)
+    loaded_window.set_comparing(True)
+    target = loaded_window.settings_panel.width_spin
+    # 押しっぱなしの自動リピートで届く「離した」は無視する
+    repeat_release = QKeyEvent(
+        QKeyEvent.Type.KeyRelease,
+        Qt.Key.Key_Backslash,
+        Qt.KeyboardModifier.NoModifier,
+        "\\",
+        True,
+    )
+    QApplication.sendEvent(target, repeat_release)
+
+    assert loaded_window.is_comparing()
+
+
+def test_compare_keeps_orientation_and_trim_region(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.rotate_right_button.click()
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    panel.shape_combo.setCurrentIndex(panel.shape_combo.findData(ShapeType.CIRCLE))
+    panel.trim_button.click()
+
+    loaded_window.set_comparing(True)
+
+    # 回転後 300x400 → 写真部分の比 (正方形) の範囲 300x300。フレーム・形は外す
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (300, 300)
+    assert not source.hasAlphaChannel() or source.pixelColor(0, 0).alpha() == 255
+
+
+def test_compare_follows_setting_changes(loaded_window, qtbot):
+    loaded_window.set_comparing(True)
+    loaded_window.settings_panel.rotate_right_button.click()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (300, 400)
+    assert preview_pixel(loaded_window, 150, 50) == RED  # 回転は反映、色はそのまま
+
+
+def test_compare_ends_when_window_deactivates(loaded_window, monkeypatch):
+    # キーを押したまま別のウィンドウに移ると「離した」が届かないので、非アクティブ時に戻す
+    from PyQt6.QtCore import QEvent
+
+    loaded_window.set_comparing(True)
+    monkeypatch.setattr(loaded_window, "isActiveWindow", lambda: False)
+
+    loaded_window.changeEvent(QEvent(QEvent.Type.ActivationChange))
+
+    assert not loaded_window.is_comparing()
+
+
+def test_compare_key_ignored_when_inactive(loaded_window, qtbot, monkeypatch):
+    monkeypatch.setattr(loaded_window, "isActiveWindow", lambda: False)
+    qtbot.keyPress(loaded_window.settings_panel.width_spin, Qt.Key.Key_Backslash)
+    assert not loaded_window.is_comparing()
+
+
+def test_compare_ignored_without_image(window):
+    window.set_comparing(True)
+    assert not window.is_comparing()
+    assert window.drop_area.badge_text() is None
+
+
+def test_load_ends_compare(loaded_window, tmp_path, questions):
+    loaded_window.set_comparing(True)
+    path = tmp_path / "other.png"
+    Image.new("RGB", (50, 40)).save(path)
+
+    loaded_window.load_file(path)
+
+    assert not loaded_window.is_comparing()
+    assert loaded_window.drop_area.badge_text() is None

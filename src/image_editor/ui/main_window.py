@@ -4,9 +4,10 @@ import os
 from pathlib import Path
 
 from PIL import Image
-from PyQt6.QtCore import Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -25,6 +26,7 @@ from image_editor.core.io import (
 )
 from image_editor.core.pipeline import (
     EditSettings,
+    effective_crop,
     make_preview,
     output_size,
     render_preview,
@@ -57,6 +59,9 @@ DISCARD_QUESTION = "保存していない変更があります。破棄してよ
 AUTO_PREVIEW_DELAY_MS = 300
 # 設定の変更が落ち着いてから履歴に積むまでの待ち時間（続けて変えた分は 1 回の操作にまとめる）
 HISTORY_DELAY_MS = 500
+# 押している間だけ加工前の画像を表示するキー（JIS 配列の ¥ キーも同じ位置にある）
+COMPARE_KEYS = (Qt.Key.Key_Backslash, Qt.Key.Key_yen)
+COMPARE_BADGE_TEXT = "加工前"
 
 
 SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
@@ -124,6 +129,8 @@ class MainWindow(QMainWindow):
         self._history_timer.setSingleShot(True)
         self._history_timer.setInterval(HISTORY_DELAY_MS)
         self._history_timer.timeout.connect(self._commit_history)
+        # 加工前の画像を表示中か（\ キーか「加工前」ボタンを押している間）
+        self._comparing = False
 
         self.drop_area = DropArea()
         self.drop_area.files_dropped.connect(self._on_files_dropped)
@@ -134,6 +141,11 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
         self.settings_panel.reset_requested.connect(self.reset)
+        self.settings_panel.compare_toggled.connect(self.set_comparing)
+        # どのウィジェットにフォーカスがあっても \ キーで比べられるよう、アプリ全体のキーを見る
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # 項目が多く、小さいウィンドウでは縦に収まらないので、設定パネルは縦にスクロールできる
         # ようにする（横はスクロールさせず、スクロールバーの分も含めて欠けない幅を確保する）
@@ -224,6 +236,8 @@ class MainWindow(QMainWindow):
             )
             return False
 
+        self._comparing = False
+        self.drop_area.set_badge(None)
         self.loaded = loaded
         self._preview, self._preview_factor = make_preview(loaded.image)
         self._saved_settings = None
@@ -266,10 +280,11 @@ class MainWindow(QMainWindow):
         if self.loaded is None or self._preview is None:
             return
         settings = self.settings_panel.settings()
+        shown = self._before_settings(settings) if self._comparing else settings
         try:
             rendered = render_preview(
                 self._preview,
-                settings,
+                shown,
                 self._preview_factor,
                 trimmed=self.settings_panel.is_trim_view(),
             )
@@ -278,6 +293,56 @@ class MainWindow(QMainWindow):
             return
         self._rendered_key = self._preview_key(settings)
         self.drop_area.set_image(rendered)
+
+    # --- 加工前との比較 ------------------------------------------------------
+
+    def set_comparing(self, comparing: bool) -> None:
+        """加工前の画像の表示を切り替える（押している間だけ True にする）。
+
+        加工前は、向き（回転・反転）と表示範囲はそのままで、色の調整・テイスト・周辺減光・
+        経年劣化・形・フレームを外したもの。表示中は左上に「加工前」と出す。
+        """
+        comparing = comparing and self.loaded is not None
+        if comparing == self._comparing:
+            return
+        self._comparing = comparing
+        self.drop_area.set_badge(COMPARE_BADGE_TEXT if comparing else None)
+        self.update_preview()
+
+    def is_comparing(self) -> bool:
+        """加工前の画像を表示中かを返す。"""
+        return self._comparing
+
+    def _before_settings(self, settings: EditSettings) -> EditSettings:
+        """加工前の表示用の設定。向きと、実際に切り抜く範囲だけを残す。"""
+        assert self.loaded is not None
+        size = settings.orientation.size(self.loaded.image.size)
+        # フレーム・円の比に合わせた範囲も、そのままの範囲で見比べられるようにする
+        crop = effective_crop(size, settings.crop, settings.frame, settings.shape)
+        return EditSettings(orientation=settings.orientation, crop=crop)
+
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:
+        if (
+            isinstance(event, QKeyEvent)
+            and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() in COMPARE_KEYS
+            and self.isActiveWindow()
+            and self.loaded is not None
+        ):
+            if not event.isAutoRepeat():
+                self.set_comparing(event.type() == QEvent.Type.KeyPress)
+            return True  # 数値欄などに文字として入らないようにする
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event: QEvent | None) -> None:
+        # キーを押したまま別のウィンドウに切り替えると離したことが届かないので、ここで戻す
+        if (
+            event is not None
+            and event.type() == QEvent.Type.ActivationChange
+            and not self.isActiveWindow()
+        ):
+            self.set_comparing(False)
+        super().changeEvent(event)
 
     def save_file_dialog(self) -> None:
         """保存ダイアログを開き、原寸で処理して書き出す。"""
@@ -360,6 +425,8 @@ class MainWindow(QMainWindow):
         if self.is_saving() or not self._confirm_discard():
             return
         self._auto_preview_timer.stop()
+        self._comparing = False
+        self.drop_area.set_badge(None)
         self.loaded = None
         self._preview = None
         self._rendered_key = None
@@ -481,6 +548,7 @@ class MainWindow(QMainWindow):
             frame,
             shape,
             trimmed,
+            self._comparing,
         )
 
     def _on_trim_view_toggled(self, trimmed: bool) -> None:

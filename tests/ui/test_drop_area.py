@@ -240,3 +240,29 @@ def test_opaque_image_is_unchanged(area):
 
     assert color_at(image, ratio, 16 + 2, 16 + 2) == (10, 120, 200)
     assert color_at(image, ratio, 16 + 8 + 2, 16 + 2) == (10, 120, 200)
+
+
+# --- 左上の表示（「加工前」など） -----------------------------------------------
+
+
+def test_badge(qtbot):
+    area = DropArea()
+    qtbot.addWidget(area)
+    area.resize(632, 432)
+    area.show()
+    qtbot.waitExposed(area)
+    area.set_image(Image.new("RGB", (1200, 800)))
+    assert area.badge_text() is None
+
+    area.set_badge("加工前")
+
+    assert area.badge_text() == "加工前"
+    # 画像の左上から少し内側で、範囲選択のマスクより手前
+    image_rect = area.image_rect()
+    assert area.badge.x() >= image_rect.x()
+    assert area.badge.y() >= image_rect.y()
+    children = area.children()
+    assert children.index(area.badge) > children.index(area.crop_overlay)
+
+    area.set_badge(None)
+    assert area.badge_text() is None
