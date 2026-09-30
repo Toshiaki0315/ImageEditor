@@ -16,6 +16,7 @@ from image_editor.core.pipeline import (
     render_preview,
     scale_settings,
 )
+from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import CropRect
 
 RED = (255, 0, 0)
@@ -752,3 +753,133 @@ def test_exposure_before_brightness():
 def test_render_preview_applies_exposure():
     image = Image.new("RGB", (40, 30), (100, 100, 100))
     assert render_preview(image, EditSettings(exposure=2.0)).getpixel((0, 0))[0] > 150
+
+
+# --- 形（角丸・円） -------------------------------------------------------------
+
+
+def test_effective_crop_circle_is_centered_square():
+    assert effective_crop((400, 300), None, shape=ShapeType.CIRCLE) == CropRect(50, 0, 300, 300)
+    assert effective_crop((400, 300), None, shape=ShapeType.ROUNDED) is None
+
+
+def test_effective_crop_circle_with_frame_keeps_window_aspect():
+    # フレームがあるときの円は写真部分の中に描くので、写真部分の比率で切り抜く
+    rect = effective_crop((300, 600), None, FrameType.INSTAX_MINI, ShapeType.CIRCLE)
+    assert rect == effective_crop((300, 600), None, FrameType.INSTAX_MINI)
+
+
+def test_circle_without_frame_is_transparent_outside():
+    settings = EditSettings(shape=ShapeType.CIRCLE)
+
+    result = apply_edits(make_sample(), settings)
+
+    # 400x300 → 中央の正方形 300x300 → 円の外は透明
+    assert result.mode == "RGBA"
+    assert result.size == (300, 300)
+    assert result.getpixel((0, 0))[3] == 0
+    assert result.getpixel((150, 150)) == (*BLUE, 255)
+
+
+def test_rounded_keeps_size():
+    settings = EditSettings(shape=ShapeType.ROUNDED, corner_radius=20, width=200)
+
+    result = apply_edits(make_sample(), settings)
+
+    assert result.size == (200, 150)
+    assert result.getpixel((0, 0))[3] == 0
+    assert result.getpixel((100, 75))[3] == 255
+
+
+def test_rectangle_is_unchanged():
+    settings = EditSettings(shape=ShapeType.RECTANGLE, corner_radius=50)
+    assert apply_edits(make_sample(), settings).tobytes() == make_sample().tobytes()
+
+
+@pytest.mark.parametrize("shape", [ShapeType.ROUNDED, ShapeType.CIRCLE])
+@pytest.mark.parametrize("frame", [FrameType.POLAROID, FrameType.INSTAX_MINI])
+def test_shape_with_frame_fills_outside_with_frame_color(shape, frame):
+    image = Image.new("RGB", (300, 600), (0, 0, 255))
+    settings = EditSettings(shape=shape, corner_radius=30, frame=frame)
+
+    result = apply_edits(image, settings)
+
+    # フレームがあると形の外側はフレームの白で、不透明の RGB のまま
+    assert result.mode == "RGB"
+    rect = effective_crop(image.size, None, frame)
+    left, top, _, _ = frames.frame_margins(frame, (rect.width, rect.height))
+    assert result.getpixel((left, top)) == WHITE  # 写真部分の左上の角
+    center = (left + rect.width // 2, top + rect.height // 2)
+    assert result.getpixel(center) == (0, 0, 255)
+    assert result.size == output_size(image.size, settings)
+
+
+def test_instax_circle_uses_window_short_side():
+    # チェキの写真部分（縦長）の中に、短辺を直径とする円を描く
+    image = Image.new("RGB", (460, 620), (0, 0, 255))
+    settings = EditSettings(shape=ShapeType.CIRCLE, frame=FrameType.INSTAX_MINI)
+
+    result = apply_edits(image, settings)
+
+    left, top, _, _ = frames.frame_margins(FrameType.INSTAX_MINI, (460, 620))
+    cx, cy = left + 230, top + 310
+    assert result.getpixel((cx, cy - 225)) == (0, 0, 255)  # 半径 230 の内側
+    assert result.getpixel((cx, cy - 240)) == WHITE  # 半径の外（写真部分の中）
+    assert result.getpixel((cx - 225, cy)) == (0, 0, 255)
+
+
+@pytest.mark.parametrize("shape", list(ShapeType))
+@pytest.mark.parametrize("settings", SETTINGS_CASES)
+def test_output_size_matches_apply_edits_with_shape(settings, shape):
+    settings = EditSettings(
+        crop=settings.crop,
+        width=settings.width,
+        height=settings.height,
+        keep_aspect=settings.keep_aspect,
+        shape=shape,
+    )
+    original = make_sample()
+
+    assert output_size(original.size, settings) == apply_edits(original, settings).size
+
+
+def test_shape_is_applied_after_vignette_and_aging():
+    # 形の外側は透明のまま（周辺減光・経年劣化で塗られない）
+    settings = EditSettings(shape=ShapeType.CIRCLE, vignette=100, aging=100)
+    result = apply_edits(make_sample(), settings)
+    assert result.getpixel((0, 0))[3] == 0
+
+
+def test_scale_settings_keeps_shape():
+    settings = EditSettings(shape=ShapeType.ROUNDED, corner_radius=25)
+    assert scale_settings(settings, 0.5) == settings
+
+
+@pytest.mark.parametrize("shape", list(ShapeType))
+def test_render_preview_does_not_apply_shape(shape):
+    image = make_sample()
+    result = render_preview(image, EditSettings(shape=shape))
+    assert result.size == image.size
+    assert result.mode == "RGB"
+
+
+@pytest.mark.parametrize("shape", [ShapeType.ROUNDED, ShapeType.CIRCLE])
+@pytest.mark.parametrize("frame", list(FrameType))
+def test_render_preview_trimmed_shape_matches_apply_edits(shape, frame):
+    image = make_sample()
+    settings = EditSettings(
+        crop=CropRect(20, 10, 300, 200), shape=shape, corner_radius=30, frame=frame
+    )
+
+    preview = render_preview(image, settings, trimmed=True)
+
+    assert preview.tobytes() == apply_edits(image, settings).tobytes()
+
+
+def test_render_preview_trimmed_rounded_without_crop():
+    # トリミング範囲がなくても、角丸を反映した全体を表示する
+    result = render_preview(
+        make_sample(), EditSettings(shape=ShapeType.ROUNDED, corner_radius=20), trimmed=True
+    )
+    assert result.size == (400, 300)
+    assert result.getpixel((0, 0))[3] == 0

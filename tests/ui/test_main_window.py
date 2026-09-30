@@ -10,6 +10,7 @@ from image_editor.app import create_window
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import load_image
+from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
@@ -1131,3 +1132,87 @@ def test_save_to_refuses_original_file(loaded_window, warnings):
     assert not loaded_window.is_saving()
     assert original.read_bytes() == before
     assert len(warnings) == 1
+
+
+# --- 形 -----------------------------------------------------------------------
+
+
+def select_shape(window: MainWindow, shape: ShapeType) -> None:
+    combo = window.settings_panel.shape_combo
+    combo.setCurrentIndex(combo.findData(shape))
+
+
+def test_trim_view_shows_circle(loaded_window):
+    panel = loaded_window.settings_panel
+    select_shape(loaded_window, ShapeType.CIRCLE)
+
+    panel.trim_button.click()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (300, 300)
+    assert source.hasAlphaChannel()
+    assert source.pixelColor(0, 0).alpha() == 0  # 円の外は透明（市松模様で表示）
+    assert source.pixelColor(150, 150).alpha() == 255
+
+
+def test_whole_view_does_not_show_shape(loaded_window):
+    select_shape(loaded_window, ShapeType.ROUNDED)
+    loaded_window.update_preview()
+
+    source = loaded_window.drop_area._source
+    assert (source.width(), source.height()) == (400, 300)
+    assert source.pixelColor(0, 0).alpha() == 255
+
+
+def test_corner_radius_updates_trim_view(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    select_shape(loaded_window, ShapeType.ROUNDED)
+    panel.corner_slider.setValue(0)
+    panel.trim_button.click()
+    assert loaded_window.drop_area._source.pixelColor(0, 0).alpha() == 255
+
+    panel.corner_slider.setValue(30)
+
+    qtbot.waitUntil(
+        lambda: loaded_window.drop_area._source.pixelColor(0, 0).alpha() == 0, timeout=2000
+    )
+
+
+def test_save_circle_png_is_transparent(loaded_window, qtbot, tmp_path):
+    select_shape(loaded_window, ShapeType.CIRCLE)
+    out = tmp_path / "circle.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = Image.open(out)
+    assert saved.size == (300, 300)
+    assert saved.mode == "RGBA"
+    assert saved.getpixel((0, 0))[3] == 0
+    assert saved.getpixel((150, 150))[3] == 255
+
+
+def test_save_circle_jpeg_is_white_outside(loaded_window, qtbot, tmp_path):
+    select_shape(loaded_window, ShapeType.CIRCLE)
+    out = tmp_path / "circle.jpg"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image
+    assert saved.mode == "RGB"
+    assert all(v > 245 for v in saved.getpixel((2, 2)))
+
+
+def test_save_circle_with_frame(loaded_window, qtbot, tmp_path):
+    panel = loaded_window.settings_panel
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    select_shape(loaded_window, ShapeType.CIRCLE)
+    out = tmp_path / "framed.png"
+
+    save_and_wait(qtbot, loaded_window, out)
+
+    saved = load_image(out).image
+    assert saved.mode == "RGB"  # 形の外はフレームの白で埋まり、透明にならない
+    assert saved.size == loaded_window_output(loaded_window)
+    # 写真部分 (17, 23) から 300x300。その左上の角はフレームの白
+    assert saved.getpixel((19, 25)) == (255, 255, 255)
+    assert saved.getpixel((17 + 150, 23 + 150)) != (255, 255, 255)

@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
         """縮小版の画像にフィルターの色と周辺減光を適用してプレビューに表示する。
 
         通常は元の画角全体を表示してトリミング範囲をマスクで示し（いつでも選び直せる）、
-        「トリミング実行」中は切り抜いた範囲にフレームを付けた完成形を表示する。リサイズは
+        「トリミング実行」中は切り抜いた範囲に形とフレームを反映した完成形を表示する。リサイズは
         表示に反映せず、出力サイズはステータスバーに出す。
         """
         self._auto_preview_timer.stop()
@@ -374,11 +374,12 @@ class MainWindow(QMainWindow):
     def _preview_key(self, settings: EditSettings) -> tuple[object, ...]:
         """プレビューの見た目を決める条件。サイズ変更は表示に反映しないので含めない。"""
         trimmed = self.settings_panel.is_trim_view()
-        # トリミング範囲とフレーム（写真部分の比率への切り抜き）は、切り抜き表示中か
+        # トリミング範囲・フレーム・形（写真部分や円の比率への切り抜き）は、切り抜き表示中か
         # 周辺減光があるときだけ見た目に影響する
         affects_view = trimmed or bool(settings.vignette)
         crop = settings.crop if affects_view else None
         frame = settings.frame if affects_view else None
+        shape = (settings.shape, settings.corner_radius) if affects_view else None
         return (
             settings.filter,
             settings.temperature,
@@ -390,6 +391,7 @@ class MainWindow(QMainWindow):
             settings.aging,
             crop,
             frame,
+            shape,
             trimmed,
         )
 
