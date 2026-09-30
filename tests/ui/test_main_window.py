@@ -1266,3 +1266,34 @@ def test_frame_mask_matches_saved_crop(loaded_window, qtbot, tmp_path):
 
     assert overlay_crop == CropRect(100, 0, 100, 100)
     assert panel.base_size() == (100, 100)
+
+
+# --- 既定値に戻す -------------------------------------------------------------
+
+
+def test_double_click_slider_updates_preview(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.saturation_slider.setValue(-100)  # 白黒
+    loaded_window.update_preview()
+    assert len(set(preview_pixel(loaded_window, 50, 150))) == 1
+
+    qtbot.mouseDClick(panel.saturation_slider, Qt.MouseButton.LeftButton)
+
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 50, 150) == (220, 60, 30), timeout=2000)
+
+
+def test_reset_adjustments_keeps_image_and_crop(loaded_window, qtbot, questions):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 200, 100))
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.MONOTONE))
+    panel.exposure_slider.setValue(10)
+    loaded_window.update_preview()
+
+    panel.reset_adjustments_button.click()
+
+    # 確認ダイアログを出さず、画像とトリミング範囲は残る
+    assert questions["asked"] == 0
+    assert loaded_window.loaded is not None
+    assert panel.settings().crop == CropRect(0, 0, 200, 100)
+    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 200, 100)
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 50, 150) == (220, 60, 30), timeout=2000)

@@ -1,4 +1,5 @@
 import pytest
+from PyQt6.QtCore import Qt
 
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
@@ -862,3 +863,105 @@ def test_aspect_controls_disabled_without_image(qtbot):
 def test_aspect_does_not_count_as_change(panel):
     select_aspect(panel, AspectRatio.RATIO_4_3)
     assert panel.settings() == EditSettings()
+
+
+# --- 既定値に戻す -------------------------------------------------------------
+
+SLIDER_DEFAULTS = [
+    ("exposure_slider", 20, 0),
+    ("brightness_slider", 30, 0),
+    ("contrast_slider", -40, 0),
+    ("temperature_slider", 30, 65),  # 3000K → 6500K（値は K ÷ 100）
+    ("saturation_slider", 50, 0),
+    ("vignette_slider", 70, 0),
+    ("aging_slider", 60, 0),
+    ("corner_slider", 40, CORNER_RADIUS_DEFAULT),
+]
+
+
+@pytest.mark.parametrize(("name", "changed", "default"), SLIDER_DEFAULTS)
+def test_double_click_resets_slider(panel, qtbot, name, changed, default):
+    select_shape(panel, ShapeType.ROUNDED)  # 角丸のスライダーを操作できるようにする
+    slider = getattr(panel, name)
+    slider.setValue(changed)
+
+    with qtbot.waitSignal(panel.settings_changed):
+        qtbot.mouseDClick(slider, Qt.MouseButton.LeftButton)
+
+    assert slider.value() == default
+    assert slider.default_value() == default
+
+
+def test_double_click_updates_value_label(panel, qtbot):
+    panel.temperature_slider.setValue(30)
+    assert panel.temperature_value_label.text() == "3000 K"
+
+    qtbot.mouseDClick(panel.temperature_slider, Qt.MouseButton.LeftButton)
+
+    assert panel.temperature_value_label.text() == "6500 K"
+
+
+def test_double_click_on_disabled_slider_does_nothing(panel, qtbot):
+    panel.corner_slider.setValue(40)  # 形が矩形なので操作できない
+    qtbot.mouseDClick(panel.corner_slider, Qt.MouseButton.LeftButton)
+    assert panel.corner_slider.value() == 40
+
+
+def change_everything(panel: SettingsPanel) -> None:
+    panel.set_crop(CropRect(10, 20, 200, 100))
+    panel.width_spin.setValue(100)
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.SEPIA))
+    select_frame(panel, FrameType.POLAROID)
+    select_shape(panel, ShapeType.ROUNDED)
+    panel.corner_slider.setValue(30)
+    for name, changed, _ in SLIDER_DEFAULTS[:-1]:
+        getattr(panel, name).setValue(changed)
+
+
+def test_reset_adjustments_resets_only_color(panel, qtbot):
+    change_everything(panel)
+    before = panel.settings()
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.reset_adjustments_button.click()
+
+    after = blocker.args[0]
+    # テイストと色のスライダーは既定値
+    default = EditSettings()
+    assert after.filter is FilterType.NONE
+    for field in (
+        "exposure",
+        "brightness",
+        "contrast",
+        "temperature",
+        "saturation",
+        "vignette",
+        "aging",
+    ):
+        assert getattr(after, field) == getattr(default, field)
+    # サイズ変更・トリミング・フレーム・形・角丸は残る
+    for field in ("crop", "width", "height", "keep_aspect", "frame", "shape", "corner_radius"):
+        assert getattr(after, field) == getattr(before, field)
+    assert panel.saturation_value_label.text() == "0"
+    assert panel.exposure_value_label.text() == "0.0 EV"
+
+
+def test_reset_adjustments_emits_once(panel, qtbot):
+    change_everything(panel)
+    received = []
+    panel.settings_changed.connect(received.append)
+
+    panel.reset_adjustments()
+
+    assert len(received) == 1
+
+
+def test_reset_adjustments_button_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not widget.reset_adjustments_button.isEnabled()
+
+
+def test_reset_adjustments_button_enabled_after_load(panel):
+    assert panel.reset_adjustments_button.isEnabled()
+    assert panel.reset_adjustments_button.text() == "加工をリセット"
