@@ -8,6 +8,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PyQt6.QtWidgets import QWidget
 
+from image_editor.core.shapes import CORNER_RADIUS_MAX, ShapeType
 from image_editor.core.transform import CropRect, aspect_drag_rect, clamp_crop, oriented
 
 MASK_COLOR = QColor(0, 0, 0, 120)
@@ -44,6 +45,25 @@ def crop_to_widget_rect(rect: CropRect, image_rect: QRectF, image_size: tuple[in
         rect.x + rect.width, rect.y + rect.height, image_rect, image_size
     )
     return QRectF(top_left, bottom_right)
+
+
+def shape_path(rect: QRectF, shape: ShapeType, corner_radius: int) -> QPainterPath | None:
+    """rect（ウィジェット座標）に形をかけたときの輪郭を返す。矩形・半径 0 の角丸なら None。
+
+    保存結果（core.shapes.shape_mask）と同じ形にする: 角丸は短辺 × corner_radius%、
+    円は中央の、短辺を直径とする正円。
+    """
+    short_side = min(rect.width(), rect.height())
+    path = QPainterPath()
+    if shape is ShapeType.CIRCLE:
+        center = rect.center()
+        path.addEllipse(center, short_side / 2, short_side / 2)
+        return path
+    if shape is ShapeType.ROUNDED and corner_radius > 0:
+        radius = short_side * min(corner_radius, CORNER_RADIUS_MAX) / 100
+        path.addRoundedRect(rect, radius, radius)
+        return path
+    return None
 
 
 def rect_from_points(a: tuple[int, int], b: tuple[int, int]) -> CropRect:
@@ -94,6 +114,10 @@ class CropOverlay(QWidget):
         self._crop: CropRect | None = None
         self._drag: _Drag | None = None
         self._aspect: tuple[float, float] | None = None
+        # 形（角丸・円）と、それをかける範囲（原画像座標。None なら画像全体）
+        self._shape = ShapeType.RECTANGLE
+        self._corner_radius = 0
+        self._shape_area: CropRect | None = None
         self._free_orientation = False
         self.setMouseTracking(True)
         self.set_active(False)
@@ -137,6 +161,26 @@ class CropOverlay(QWidget):
         """
         self._aspect = aspect
         self._free_orientation = free_orientation
+
+    def set_shape(self, shape: ShapeType, corner_radius: int, area: CropRect | None) -> None:
+        """マスクで見せる形を設定する。area は形をかける範囲（原画像座標、None で画像全体）。
+
+        形の外側を範囲外と同じように暗くし、輪郭を線で描く（保存結果と同じ形）。
+        """
+        self._shape = shape
+        self._corner_radius = corner_radius
+        self._shape_area = area
+        self.update()
+
+    def shape_outline(self) -> QPainterPath | None:
+        """今の形の輪郭（ウィジェット座標）を返す。形がなければ None。"""
+        image_rect = self._image_rect()
+        if self._image_size is None or image_rect.isEmpty():
+            return None
+        area = image_rect
+        if self._shape_area is not None:
+            area = crop_to_widget_rect(self._shape_area, image_rect, self._image_size)
+        return shape_path(area, self._shape, self._corner_radius)
 
     def aspect(self) -> tuple[float, float] | None:
         """ドラッグで保つ縦横比を返す。"""
@@ -204,24 +248,37 @@ class CropOverlay(QWidget):
 
     def paintEvent(self, event: QPaintEvent | None) -> None:
         image_rect = self._image_rect()
-        if self._image_size is None or image_rect.isEmpty() or self._crop is None:
+        if self._image_size is None or image_rect.isEmpty():
+            return
+        outline = self.shape_outline()
+        if self._crop is None and outline is None:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        selection = self._widget_crop_rect()
 
-        # 範囲外を暗くする
+        # 範囲外と形の外側を暗くする（形があれば形、なければ範囲の内側だけを明るく残す）
         mask = QPainterPath()
         mask.addRect(image_rect)
-        hole = QPainterPath()
-        hole.addRect(selection)
+        if outline is not None:
+            hole = outline
+        else:
+            hole = QPainterPath()
+            hole.addRect(self._widget_crop_rect())
         painter.fillPath(mask.subtracted(hole), MASK_COLOR)
 
-        # 枠（明るい背景でも暗い背景でも見えるよう白線の外側に黒線）
-        painter.setPen(QPen(QColor(0, 0, 0, 160), 3))
-        painter.drawRect(selection)
-        painter.setPen(QPen(QColor(255, 255, 255), 1))
-        painter.drawRect(selection)
+        # 枠・輪郭（明るい背景でも暗い背景でも見えるよう白線の外側に黒線）
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for pen in (QPen(QColor(0, 0, 0, 160), 3), QPen(QColor(255, 255, 255), 1)):
+            painter.setPen(pen)
+            if outline is not None:
+                painter.drawPath(outline)
+            if self._crop is not None:
+                painter.drawRect(self._widget_crop_rect())
+
+        if self._crop is None:
+            painter.end()
+            return
+        selection = self._widget_crop_rect()
 
         painter.setBrush(QColor(255, 255, 255))
         painter.setPen(QPen(QColor(0, 0, 0, 160), 1))

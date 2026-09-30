@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PyQt6.QtCore import QPoint, Qt, QTimer
+from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
 
@@ -1797,3 +1797,81 @@ def test_load_ends_compare(loaded_window, tmp_path, questions):
 
     assert not loaded_window.is_comparing()
     assert loaded_window.drop_area.badge_text() is None
+
+
+# --- 通常の表示での形（角丸・円）のマスク -------------------------------------------
+
+
+def select_shape_in(window: MainWindow, shape: ShapeType) -> None:
+    combo = window.settings_panel.shape_combo
+    combo.setCurrentIndex(combo.findData(shape))
+
+
+def widget_rect(window: MainWindow, rect: CropRect):
+    from image_editor.ui.crop_overlay import crop_to_widget_rect
+
+    return crop_to_widget_rect(rect, window.drop_area.image_rect(), (400, 300))
+
+
+def test_whole_view_shows_rounded_mask(loaded_window):
+    overlay = loaded_window.drop_area.crop_overlay
+
+    select_shape_in(loaded_window, ShapeType.ROUNDED)
+
+    outline = overlay.shape_outline()
+    assert outline is not None
+    assert outline.boundingRect() == loaded_window.drop_area.image_rect()
+    # 通常の表示のまま（切り抜き表示には切り替えない）
+    assert not loaded_window.settings_panel.is_trim_view()
+    assert overlay.is_active()
+
+
+def test_corner_radius_updates_mask_immediately(loaded_window):
+    overlay = loaded_window.drop_area.crop_overlay
+    select_shape_in(loaded_window, ShapeType.ROUNDED)
+    panel = loaded_window.settings_panel
+    image_rect = loaded_window.drop_area.image_rect()
+    near_corner = image_rect.topLeft() + QPointF(8, 8)
+
+    panel.corner_slider.setValue(0)
+    assert overlay.shape_outline() is None  # 半径 0 は矩形と同じ
+
+    panel.corner_slider.setValue(50)
+    outline = overlay.shape_outline()
+    assert outline is not None
+    assert not outline.contains(near_corner)
+
+
+def test_circle_mask_matches_saved_crop(loaded_window):
+    # フレームなしの円は中央の正方形 (50, 0, 300, 300) に内接する円
+    select_shape_in(loaded_window, ShapeType.CIRCLE)
+
+    outline = loaded_window.drop_area.crop_overlay.shape_outline()
+
+    assert outline is not None
+    expected = widget_rect(loaded_window, CropRect(50, 0, 300, 300))
+    assert outline.boundingRect().toRect() == expected.toRect()
+
+
+def test_circle_mask_inside_frame_window(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 400, 300))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.INSTAX_MINI))
+    select_shape_in(loaded_window, ShapeType.CIRCLE)
+
+    outline = loaded_window.drop_area.crop_overlay.shape_outline()
+
+    # チェキの写真部分（範囲）の中に、短辺を直径とする円
+    crop = panel.settings().crop
+    assert crop is not None
+    window_rect = widget_rect(loaded_window, crop)
+    assert outline is not None
+    bounds = outline.boundingRect()
+    assert round(bounds.height()) == round(min(window_rect.width(), window_rect.height()))
+    assert bounds.center().toPoint() == window_rect.center().toPoint()
+
+
+def test_rectangle_has_no_mask(loaded_window):
+    select_shape_in(loaded_window, ShapeType.ROUNDED)
+    select_shape_in(loaded_window, ShapeType.RECTANGLE)
+    assert loaded_window.drop_area.crop_overlay.shape_outline() is None

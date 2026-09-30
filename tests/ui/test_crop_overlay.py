@@ -2,12 +2,14 @@ import pytest
 from PIL import Image
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
 
+from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import CropRect
 from image_editor.ui.crop_overlay import (
     crop_to_widget_rect,
     image_to_widget,
     move_rect,
     rect_from_points,
+    shape_path,
     widget_to_image,
 )
 from image_editor.ui.drop_area import DropArea
@@ -312,3 +314,63 @@ def test_move_ignores_aspect(qtbot, area):
     drag(qtbot, overlay, at(300, 300), at(400, 350))
 
     assert overlay.crop() == CropRect(300, 250, 300, 300)
+
+
+# --- 形（角丸・円）のマスク -------------------------------------------------------
+
+
+def test_shape_path_rectangle_is_none():
+    rect = QRectF(0, 0, 200, 100)
+    assert shape_path(rect, ShapeType.RECTANGLE, 30) is None
+    assert shape_path(rect, ShapeType.ROUNDED, 0) is None
+
+
+def test_shape_path_rounded():
+    rect = QRectF(10, 20, 200, 100)
+    path = shape_path(rect, ShapeType.ROUNDED, 20)  # 半径 = 短辺 100 × 20% = 20
+
+    assert path is not None
+    assert path.boundingRect() == rect
+    assert not path.contains(QPointF(12, 22))  # 角は外
+    assert path.contains(QPointF(10 + 20, 20 + 20))  # 円弧の中心は内
+    assert path.contains(QPointF(110, 21))  # 辺の中ほどは内
+
+
+def test_shape_path_circle_is_centered_on_short_side():
+    path = shape_path(QRectF(0, 0, 300, 100), ShapeType.CIRCLE, 10)
+    assert path is not None
+    assert path.boundingRect() == QRectF(100, 0, 100, 100)
+
+
+def test_overlay_shows_shape_without_crop(qtbot, area):
+    overlay = area.crop_overlay
+    assert overlay.shape_outline() is None
+
+    overlay.set_shape(ShapeType.ROUNDED, 25, None)
+
+    outline = overlay.shape_outline()
+    assert outline is not None
+    assert outline.boundingRect() == area.image_rect()  # 範囲がなければ画像全体
+    overlay.grab()  # 範囲なしでもマスク・輪郭の描画で落ちない
+
+
+def test_overlay_shape_uses_area(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_crop(CropRect(200, 200, 400, 200))
+
+    overlay.set_shape(ShapeType.CIRCLE, 0, CropRect(200, 200, 400, 200))
+
+    outline = overlay.shape_outline()
+    assert outline is not None
+    # 原画像の (300, 200)〜(500, 400) の正円（縮小率 0.5、余白 16）
+    assert outline.boundingRect() == QRectF(16 + 150, 16 + 100, 100, 100)
+    overlay.grab()
+
+
+def test_overlay_drag_still_works_with_shape(qtbot, area):
+    overlay = area.crop_overlay
+    overlay.set_shape(ShapeType.ROUNDED, 20, None)
+
+    drag(qtbot, overlay, at(200, 100), at(800, 500))
+
+    assert overlay.crop() == CropRect(200, 100, 600, 400)

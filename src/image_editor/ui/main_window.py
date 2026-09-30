@@ -563,6 +563,11 @@ class MainWindow(QMainWindow):
         # ドラッグ中の変更はオーバーレイ自身が発生源なので書き戻さない
         if not overlay.is_dragging():
             overlay.set_crop(settings.crop)
+        # 角丸・円は、実際に切り抜く範囲（なければ画像全体）にかけた形をマスクで見せる
+        area = None
+        if image_size is not None:
+            area = effective_crop(image_size, settings.crop, settings.frame, settings.shape)
+        overlay.set_shape(settings.shape, settings.corner_radius, area)
         if not self.is_saving():
             self._update_status()
         # 表示に影響する設定が変わったときだけ描き直す
