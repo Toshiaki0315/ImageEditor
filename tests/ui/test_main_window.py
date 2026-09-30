@@ -1007,7 +1007,15 @@ def test_panel_labels_are_not_cut_off(window, qtbot, size):
     qtbot.wait(50)
     panel = window.settings_panel
 
-    assert panel.width() >= panel.minimumSizeHint().width()
+    # 失敗したときに、どの部品が幅を広げているか分かるよう各行の最小幅を出す
+    layout = panel.layout()
+    margins = layout.contentsMargins()
+    widths = [
+        (type(item.widget() or item.layout()).__name__, item.minimumSize().width())
+        for item in (layout.itemAt(i) for i in range(layout.count()))
+    ]
+    detail = f"margins=({margins.left()}, {margins.right()}) items={widths}"
+    assert panel.width() >= panel.minimumSizeHint().width(), detail
     for label in panel.findChildren(QLabel):
         if not (label.text() and label.isVisible()):
             continue

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -293,8 +294,12 @@ class SettingsPanel(QWidget):
         # 高さ 900px 程度のウィンドウでもスクロールせずに収まるよう、間隔を少し詰める
         layout = QVBoxLayout(self)
         layout.setSpacing(PANEL_SPACING)
-        margins = layout.contentsMargins()
-        layout.setContentsMargins(margins.left(), PANEL_MARGIN, margins.right(), PANEL_MARGIN)
+        # 左右はスタイルの既定値のまま（組み立て中に contentsMargins() を読むと、スタイルが
+        # 決める値ではなく Qt の既定値 (11px) が返り、パネルの最小幅が広がってしまう）
+        style = self.style()
+        left = style.pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin) if style else 9
+        right = style.pixelMetric(QStyle.PixelMetric.PM_LayoutRightMargin) if style else 9
+        layout.setContentsMargins(left, PANEL_MARGIN, right, PANEL_MARGIN)
         layout.addWidget(size_box)
         layout.addWidget(filter_box)
         layout.addWidget(orient_box)
