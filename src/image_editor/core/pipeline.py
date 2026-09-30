@@ -6,9 +6,10 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
-from image_editor.core import effects, filters, frames, transform
+from image_editor.core import effects, filters, frames, shapes, transform
 from image_editor.core.filters import FilterType
-from image_editor.core.frames import FrameType
+from image_editor.core.frames import FRAME_COLOR, FrameType
+from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import CropRect
 
 PREVIEW_MAX_SIDE = 1600
@@ -31,17 +32,20 @@ class EditSettings:
     contrast: int = 0  # コントラスト -100〜+100（0 = 変化なし）
     exposure: float = 0.0  # 露出 -5.0〜+5.0 EV（0 = 変化なし）
     frame: FrameType = FrameType.NONE
+    shape: ShapeType = ShapeType.RECTANGLE
+    corner_radius: int = shapes.CORNER_RADIUS_DEFAULT  # 角丸の半径（短辺に対する % 0〜50）
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング（フレームの写真部分の比率への切り抜きを含む）→ リサイズ → 露出
-    → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光 → 経年劣化 → フレーム。
+    処理順: トリミング（フレームの写真部分・円の比率への切り抜きを含む）→ リサイズ → 露出
+    → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光 → 経年劣化 → 形
+    → フレーム。形の外側は、フレームがあればフレームの白、なければ透明にする。
     フレームには周辺減光・経年劣化をかけない。
     """
     image = original
-    rect = effective_crop(original.size, settings.crop, settings.frame)
+    rect = effective_crop(original.size, settings.crop, settings.frame, settings.shape)
     if rect is not None:
         image = transform.crop(image, rect)
 
@@ -57,9 +61,7 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
         image = effects.vignette(image, settings.vignette)
     if settings.aging:
         image = effects.aging(image, settings.aging)
-    if settings.frame is not FrameType.NONE:
-        image = frames.add_frame(image, settings.frame)
-    return image
+    return _apply_shape_and_frame(image, settings)
 
 
 def render_preview(
@@ -73,14 +75,14 @@ def render_preview(
     image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色・周辺減光・
     経年劣化を適用し、リサイズは適用しない（出力サイズは output_size で確認する）。
 
-    - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（フレームがあれば
-      その写真部分の比率に切り抜いた範囲。なければ全体）を基準にかけ、トリミング範囲は
-      いつでも選び直せる。フレームは付けない
-    - trimmed=True: 切り抜いた範囲だけを表示し、フレームも付けて完成形を見せる
-      （範囲もフレームもなければ全体）
+    - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（フレーム・円が
+      あればその比率に切り抜いた範囲。なければ全体）を基準にかけ、トリミング範囲は
+      いつでも選び直せる。形とフレームは反映しない
+    - trimmed=True: 切り抜いた範囲だけを表示し、形とフレームも反映して完成形を見せる
+      （切り抜く範囲がなければ全体）
     """
     scaled = scale_settings(settings, factor)
-    rect = effective_crop(image.size, scaled.crop, scaled.frame)
+    rect = effective_crop(image.size, scaled.crop, scaled.frame, scaled.shape)
     rendered = filters.apply_filter(_apply_basic_adjustments(image, settings), settings.filter)
     if trimmed and rect is not None:
         rendered = transform.crop(rendered, rect)
@@ -96,15 +98,15 @@ def render_preview(
     if settings.aging:
         # 経年劣化は画素ごとの色の変化と固定模様の粒子なので、表示範囲全体にかける
         rendered = effects.aging(rendered, settings.aging)
-    if trimmed and settings.frame is not FrameType.NONE:
-        rendered = frames.add_frame(rendered, settings.frame)
+    if trimmed:
+        rendered = _apply_shape_and_frame(rendered, settings)
     return rendered
 
 
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:
     """画像を処理せずに、apply_edits の出力サイズを計算する（フレームを含む）。"""
     size = original_size
-    rect = effective_crop(original_size, settings.crop, settings.frame)
+    rect = effective_crop(original_size, settings.crop, settings.frame, settings.shape)
     if rect is not None:
         size = (rect.width, rect.height)
     size = transform.fit_size(size, settings.width, settings.height, settings.keep_aspect)
@@ -112,16 +114,23 @@ def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple
 
 
 def effective_crop(
-    size: tuple[int, int], crop: CropRect | None, frame: FrameType = FrameType.NONE
+    size: tuple[int, int],
+    crop: CropRect | None,
+    frame: FrameType = FrameType.NONE,
+    shape: ShapeType = ShapeType.RECTANGLE,
 ) -> CropRect | None:
     """実際に切り抜く範囲を返す（size の画像の座標系）。切り抜かないなら None。
 
     トリミング範囲は画像内に収まるよう補正する。フレームがあるときは、トリミング範囲
     （なければ画像全体）をフレームの写真部分の縦横比になるよう中央で切り抜く。
+    フレームがなく形が円のときは、中央を正方形に切り抜く（フレームがあるときの円は
+    写真部分の中に描くので、写真部分の比率のまま）。
     """
     rect = transform.clamp_crop(crop, size) if crop is not None else None
     base = rect or CropRect(0, 0, *size)
     aspect = frames.window_aspect(frame, (base.width, base.height))
+    if aspect is None:
+        aspect = shapes.shape_aspect(shape)
     if aspect is None:
         return rect
     return transform.fit_aspect(base, aspect)
@@ -173,6 +182,20 @@ def make_preview(
     # reducing_gap で先に整数倍の縮小をしてから LANCZOS をかけ、大きな画像でも速くする
     preview = original.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
     return preview, factor
+
+
+def _apply_shape_and_frame(image: Image.Image, settings: EditSettings) -> Image.Image:
+    """形で切り抜き、フレームを付ける。
+
+    形の外側は、フレームがあればフレームの白で塗り、なければ透明にする。
+    """
+    has_frame = settings.frame is not FrameType.NONE
+    if settings.shape is not ShapeType.RECTANGLE:
+        fill = FRAME_COLOR if has_frame else None
+        image = shapes.apply_shape(image, settings.shape, settings.corner_radius, fill)
+    if has_frame:
+        image = frames.add_frame(image, settings.frame)
+    return image
 
 
 def _apply_basic_adjustments(image: Image.Image, settings: EditSettings) -> Image.Image:

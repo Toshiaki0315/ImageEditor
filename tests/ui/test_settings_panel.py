@@ -3,6 +3,7 @@ import pytest
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
+from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
 from image_editor.core.transform import CropRect
 from image_editor.ui.settings_panel import SettingsPanel
 
@@ -593,3 +594,87 @@ def test_exposure_is_reset_on_new_image(panel):
 
     assert panel.exposure_ev() == 0.0
     assert panel.exposure_value_label.text() == "0.0 EV"
+
+
+# --- 形 -----------------------------------------------------------------------
+
+
+def select_shape(panel: SettingsPanel, shape: ShapeType) -> None:
+    panel.shape_combo.setCurrentIndex(panel.shape_combo.findData(shape))
+
+
+def test_shape_combo_has_labels(panel):
+    labels = [panel.shape_combo.itemText(i) for i in range(panel.shape_combo.count())]
+    assert labels == ["矩形", "角丸", "円"]
+    settings = panel.settings()
+    assert settings.shape is ShapeType.RECTANGLE
+    assert settings.corner_radius == CORNER_RADIUS_DEFAULT
+    assert settings == EditSettings(width=None, height=None)  # 既定値は変更なし扱い
+
+
+def test_corner_slider_only_for_rounded(panel):
+    assert not panel.corner_slider.isEnabled()
+
+    select_shape(panel, ShapeType.ROUNDED)
+    assert panel.corner_slider.isEnabled()
+
+    select_shape(panel, ShapeType.CIRCLE)
+    assert not panel.corner_slider.isEnabled()
+
+
+def test_corner_slider(panel, qtbot):
+    select_shape(panel, ShapeType.ROUNDED)
+    assert panel.corner_value_label.text() == f"{CORNER_RADIUS_DEFAULT}%"
+    assert (panel.corner_slider.minimum(), panel.corner_slider.maximum()) == (0, 50)
+
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.corner_slider.setValue(35)
+
+    assert blocker.args[0].shape is ShapeType.ROUNDED
+    assert blocker.args[0].corner_radius == 35
+    assert panel.corner_value_label.text() == "35%"
+
+
+def test_circle_updates_base_size(panel):
+    select_shape(panel, ShapeType.CIRCLE)
+    assert panel.base_size() == (300, 300)
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (300, 300)
+
+    select_shape(panel, ShapeType.ROUNDED)
+    assert panel.base_size() == (400, 300)
+
+
+def test_circle_with_frame_uses_frame_window(panel):
+    select_frame(panel, FrameType.INSTAX_MINI)
+    select_shape(panel, ShapeType.CIRCLE)
+    assert panel.base_size() == (400, 297)
+
+
+def test_trim_button_is_enabled_by_shape(panel):
+    select_shape(panel, ShapeType.ROUNDED)
+    assert panel.trim_button.isEnabled()
+
+    panel.set_trim_view(True)
+    select_shape(panel, ShapeType.RECTANGLE)
+
+    assert not panel.trim_button.isEnabled()
+    assert not panel.is_trim_view()
+
+
+def test_shape_is_reset_on_new_image(panel):
+    select_shape(panel, ShapeType.ROUNDED)
+    panel.corner_slider.setValue(40)
+
+    panel.set_image_size((200, 200))
+
+    assert panel.settings().shape is ShapeType.RECTANGLE
+    assert panel.corner_slider.value() == CORNER_RADIUS_DEFAULT
+    assert panel.corner_value_label.text() == f"{CORNER_RADIUS_DEFAULT}%"
+    assert not panel.corner_slider.isEnabled()
+
+
+def test_corner_slider_disabled_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    select_shape(widget, ShapeType.ROUNDED)
+    assert not widget.corner_slider.isEnabled()

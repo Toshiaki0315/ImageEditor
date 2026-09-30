@@ -39,6 +39,12 @@ from image_editor.core.effects import (
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings, effective_crop
+from image_editor.core.shapes import (
+    CORNER_RADIUS_DEFAULT,
+    CORNER_RADIUS_MAX,
+    CORNER_RADIUS_MIN,
+    ShapeType,
+)
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, fit_size
 
 # 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
@@ -120,10 +126,22 @@ class SettingsPanel(QWidget):
         self.frame_combo = QComboBox()
         for frame_type in FrameType:
             self.frame_combo.addItem(frame_type.label, frame_type)
+        self.shape_combo = QComboBox()
+        for shape_type in ShapeType:
+            self.shape_combo.addItem(shape_type.label, shape_type)
+        # 角丸の半径（短辺に対する %）。形が角丸のときだけ操作できる
+        self.corner_slider, self.corner_value_label, corner_row = _amount_slider(
+            CORNER_RADIUS_MIN, CORNER_RADIUS_MAX
+        )
+        self.corner_slider.setPageStep(5)
+        self.corner_slider.setValue(CORNER_RADIUS_DEFAULT)
+        self.corner_value_label.setText(_percent_text(CORNER_RADIUS_DEFAULT))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
         filter_form.addRow("フレーム", self.frame_combo)
+        filter_form.addRow("形", self.shape_combo)
+        filter_form.addRow("角丸", corner_row)
         filter_form.addRow("露出", exposure_row)
         filter_form.addRow("明るさ", brightness_row)
         filter_form.addRow("コントラスト", contrast_row)
@@ -172,6 +190,9 @@ class SettingsPanel(QWidget):
         self.filter_combo.currentIndexChanged.connect(lambda _: self._emit_changed())
         # フレームを変えると写真部分の比率への切り抜きが変わるので、トリミングと同じく扱う
         self.frame_combo.currentIndexChanged.connect(lambda _: self._on_crop_edited())
+        # 円は正方形に切り抜くので、形もトリミングと同じく扱う
+        self.shape_combo.currentIndexChanged.connect(lambda _: self._on_shape_changed())
+        self.corner_slider.valueChanged.connect(self._on_corner_changed)
         for spin in self._crop_spins():
             spin.valueChanged.connect(lambda _: self._on_crop_edited())
         self.clear_crop_button.clicked.connect(self.clear_crop)
@@ -207,6 +228,8 @@ class SettingsPanel(QWidget):
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
             self.frame_combo.setCurrentIndex(0)
+            self.shape_combo.setCurrentIndex(0)
+            self.corner_slider.setValue(CORNER_RADIUS_DEFAULT)
             self.vignette_slider.setValue(0)
             self.aging_slider.setValue(0)
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
@@ -220,6 +243,7 @@ class SettingsPanel(QWidget):
             else:
                 self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
+        self._update_corner_enabled()
         self._update_trim_button()
         self._emit_changed()
 
@@ -253,6 +277,8 @@ class SettingsPanel(QWidget):
             exposure=self.exposure_ev(),
             contrast=self.contrast_slider.value(),
             frame=self.frame(),
+            shape=self.shape(),
+            corner_radius=self.corner_slider.value(),
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -269,6 +295,10 @@ class SettingsPanel(QWidget):
     def frame(self) -> FrameType:
         """選ばれているフレームを返す。"""
         return self.frame_combo.currentData()
+
+    def shape(self) -> ShapeType:
+        """選ばれている形を返す。"""
+        return self.shape_combo.currentData()
 
     def set_crop(self, rect: CropRect | None) -> None:
         """トリミング範囲を設定する（原画像の座標系）。None で解除。"""
@@ -354,17 +384,34 @@ class SettingsPanel(QWidget):
         self.contrast_value_label.setText(_signed_text(value))
         self._emit_changed()
 
+    def _on_shape_changed(self) -> None:
+        self._update_corner_enabled()
+        self._on_crop_edited()
+
+    def _on_corner_changed(self, value: int) -> None:
+        self.corner_value_label.setText(_percent_text(value))
+        self._emit_changed()
+
+    def _update_corner_enabled(self) -> None:
+        """角丸のスライダーは、画像があって形が角丸のときだけ操作できる。"""
+        enabled = self._image_size is not None and self.shape() is ShapeType.ROUNDED
+        self.corner_slider.setEnabled(enabled)
+        self.corner_value_label.setEnabled(enabled)
+
     def _on_trim_toggled(self, checked: bool) -> None:
         self.trim_button.setText(EDIT_RANGE_TEXT if checked else TRIM_TEXT)
         if not self._updating:
             self.trim_view_toggled.emit(checked)
 
     def _update_trim_button(self) -> None:
-        """トリミング範囲かフレームがあるときだけ「トリミング実行」を押せるようにする。
+        """トリミング範囲・フレーム・形（矩形以外）のどれかがあるときだけ「トリミング実行」を
+        押せるようにする。
 
-        どちらもなくなったら全体表示に戻す。
+        どれもなくなったら全体表示に戻す。
         """
-        has_crop = self._image_size is not None and self._effective_crop() is not None
+        has_crop = self._image_size is not None and (
+            self._effective_crop() is not None or self.shape() is not ShapeType.RECTANGLE
+        )
         if not has_crop and self.trim_button.isChecked():
             self.trim_button.setChecked(False)
         self.trim_button.setEnabled(has_crop)
@@ -417,7 +464,7 @@ class SettingsPanel(QWidget):
     def _effective_crop(self) -> CropRect | None:
         if self._image_size is None:
             return None
-        return effective_crop(self._image_size, self._crop_rect(), self.frame())
+        return effective_crop(self._image_size, self._crop_rect(), self.frame(), self.shape())
 
     def _crop_spins(self) -> tuple[QSpinBox, ...]:
         return (self.crop_x_spin, self.crop_y_spin, self.crop_width_spin, self.crop_height_spin)
@@ -458,6 +505,10 @@ def _ev_text(ev: float) -> str:
 def _signed_text(value: int) -> str:
     """0 以外は符号付きで表示する（例: +30, -50）。"""
     return f"{value:+d}" if value else "0"
+
+
+def _percent_text(value: int) -> str:
+    return f"{value}%"
 
 
 def _kelvin_text(kelvin: int) -> str:
