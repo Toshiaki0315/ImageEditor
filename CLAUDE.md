@@ -37,7 +37,10 @@ src/image_editor/
   core/                  # ★ Qt に依存しない純粋な画像処理層
     io.py                # 読み込み・保存・モード変換・EXIF 回転補正
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
-    transform.py         # 回転・反転・リサイズ・トリミング
+    effects.py           # 露出・明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化
+    transform.py         # 回転・反転・リサイズ・トリミング・縦横比
+    shapes.py            # 形（角丸・円）の切り抜き
+    frames.py            # フレーム（ポラロイド・チェキ）
     pipeline.py          # EditSettings (dataclass) と apply_edits()
   ui/                    # PyQt6 のウィジェット
     main_window.py
@@ -45,6 +48,7 @@ src/image_editor/
     settings_panel.py
     crop_overlay.py      # プレビュー上のドラッグ範囲選択
     qt_image.py          # PIL.Image <-> QPixmap 変換
+    worker.py            # 原寸処理・保存のワーカー (QRunnable)
 tests/
   core/                  # core は必ずユニットテストを書く
   ui/                    # pytest-qt によるスモークテスト
