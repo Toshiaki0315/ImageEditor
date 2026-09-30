@@ -17,3 +17,11 @@ def preferences(tmp_path, monkeypatch):
     store = QSettings(str(tmp_path / "preferences.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(main_window, "default_preferences", lambda: store)
     return store
+
+
+@pytest.fixture(autouse=True)
+def presets_path(tmp_path, monkeypatch):
+    """テストごとに空のプリセットの保存先を使う（実際の Application Support を書き換えない）。"""
+    path = tmp_path / "presets" / "presets.json"
+    monkeypatch.setattr(main_window, "default_presets_path", lambda: path)
+    return path

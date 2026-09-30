@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -50,6 +51,7 @@ from image_editor.core.io import (
     SaveOptions,
 )
 from image_editor.core.pipeline import EditSettings, effective_crop
+from image_editor.core.presets import Preset, apply_preset
 from image_editor.core.shapes import (
     CORNER_RADIUS_DEFAULT,
     CORNER_RADIUS_MAX,
@@ -110,6 +112,8 @@ class SettingsPanel(QWidget):
     save_options_changed = pyqtSignal(object)  # SaveOptions
     save_options_expanded_changed = pyqtSignal(bool)  # 保存の設定を開いたか
     compare_toggled = pyqtSignal(bool)  # 「加工前」ボタンを押している間だけ True
+    preset_save_requested = pyqtSignal()  # 「今の加工を保存…」
+    preset_delete_requested = pyqtSignal(str)  # 削除するプリセットの名前
     trim_view_toggled = pyqtSignal(bool)  # True: 切り抜き後の表示、False: 全体表示
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -183,7 +187,18 @@ class SettingsPanel(QWidget):
         self.corner_value_label.setText(_percent_text(CORNER_RADIUS_DEFAULT))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
-        filter_form.addRow(self.filter_combo)
+        # プリセット（テイストと同じ行に置いて、パネルを高くしない）
+        self.preset_menu = QMenu(self)
+        self.preset_button = QToolButton()
+        self.preset_button.setText("プリセット")
+        self.preset_button.setMenu(self.preset_menu)
+        self.preset_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._presets: list[Preset] = []
+        self.set_presets([])
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(self.filter_combo, 1)
+        filter_row.addWidget(self.preset_button)
+        filter_form.addRow(filter_row)
         filter_form.addRow("フレーム", self.frame_combo)
         filter_form.addRow("形", self.shape_combo)
         filter_form.addRow("角丸", corner_row)
@@ -586,6 +601,60 @@ class SettingsPanel(QWidget):
                     self.portrait_check.setChecked(not self.portrait_check.isChecked())
         self._on_crop_edited()
 
+    def set_presets(self, presets: list[Preset]) -> None:
+        """プリセットの一覧を「プリセット」メニューに反映する。
+
+        メニュー: 一覧（選ぶと当てはめる）／「今の加工を保存…」／「削除」（一覧のサブメニュー）
+        """
+        self._presets = list(presets)
+        menu = self.preset_menu
+        menu.clear()
+        if presets:
+            for preset in presets:
+                action = menu.addAction(preset.name)
+                action.triggered.connect(lambda _=False, p=preset: self.apply_preset(p))
+        else:
+            empty = menu.addAction("（保存したプリセットはありません）")
+            empty.setEnabled(False)
+        menu.addSeparator()
+        save = menu.addAction("今の加工をプリセットとして保存…")
+        save.triggered.connect(self.preset_save_requested)
+        delete_menu = menu.addMenu("削除")
+        delete_menu.setEnabled(bool(presets))
+        for preset in presets:
+            action = delete_menu.addAction(preset.name)
+            action.triggered.connect(
+                lambda _=False, name=preset.name: self.preset_delete_requested.emit(name)
+            )
+
+    def presets(self) -> list[Preset]:
+        """「プリセット」メニューに出している一覧を返す。"""
+        return list(self._presets)
+
+    def apply_preset(self, preset: Preset) -> None:
+        """プリセットの加工（テイスト・色の調整・フレーム・形・角丸）を当てはめる。
+
+        サイズ変更・トリミング・回転はそのまま。フレーム・円の比が変われば、フレームや形を
+        手で選んだときと同じく範囲をその比に直す。変更は 1 回だけ通知する。
+        """
+        if self._image_size is None:
+            return
+        settings = apply_preset(self.settings(), preset)
+        with self._block():
+            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
+            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
+            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
+            self.corner_slider.setValue(settings.corner_radius)
+            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
+            self.brightness_slider.setValue(settings.brightness)
+            self.contrast_slider.setValue(settings.contrast)
+            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
+            self.saturation_slider.setValue(settings.saturation)
+            self.vignette_slider.setValue(settings.vignette)
+            self.aging_slider.setValue(settings.aging)
+        self._update_corner_enabled()
+        self._on_aspect_source_changed()
+
     def reset_adjustments(self) -> None:
         """テイストと色のスライダー（露出〜経年劣化）を既定値に戻す。
 
@@ -931,7 +1000,10 @@ class SettingsPanel(QWidget):
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in self.findChildren(QWidget):
-            widget.setEnabled(enabled)
+            # メニューは開くボタンの有効・無効で決まるので触らない（QMenu を有効にすると、
+            # 項目ごとに決めたサブメニューの有効・無効が上書きされてしまう）
+            if not isinstance(widget, QMenu):
+                widget.setEnabled(enabled)
 
     def _emit_changed(self) -> None:
         if not self._updating:

@@ -9,6 +9,7 @@ from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -31,6 +32,16 @@ from image_editor.core.pipeline import (
     make_preview,
     output_size,
     render_preview,
+)
+from image_editor.core.presets import (
+    Preset,
+    PresetError,
+    load_presets,
+    normalize_name,
+    preset_from_settings,
+    remove_preset,
+    save_presets,
+    upsert_preset,
 )
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.history import History
@@ -70,6 +81,23 @@ PREF_JPEG_QUALITY = "save/jpeg_quality"
 PREF_KEEP_EXIF = "save/keep_exif"
 PREF_KEEP_GPS = "save/keep_gps"
 PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
+
+
+PRESETS_FILE = Path.home() / "Library" / "Application Support" / "ImageEditor" / "presets.json"
+
+
+def default_presets_path() -> Path:
+    """プリセットの保存先（~/Library/Application Support/ImageEditor/presets.json）。"""
+    return PRESETS_FILE
+
+
+def default_preset_name(presets: list[Preset]) -> str:
+    """まだ使われていない「プリセット 1」「プリセット 2」… の名前を返す。"""
+    names = {preset.name for preset in presets}
+    number = 1
+    while f"プリセット {number}" in names:
+        number += 1
+    return f"プリセット {number}"
 
 
 def default_preferences() -> QSettings:
@@ -185,6 +213,16 @@ class MainWindow(QMainWindow):
             lambda expanded: self._preferences.setValue(PREF_SAVE_OPTIONS_EXPANDED, expanded)
         )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
+        # プリセット（名前付きの加工の組み合わせ）
+        self._presets_path = default_presets_path()
+        self.settings_panel.preset_save_requested.connect(self.save_preset_dialog)
+        self.settings_panel.preset_delete_requested.connect(self.delete_preset)
+        try:
+            self.settings_panel.set_presets(load_presets(self._presets_path))
+        except PresetError as e:
+            # ウィンドウを出してから知らせる（アプリは使えるようにする）
+            message = str(e)
+            QTimer.singleShot(0, lambda: self._show_error("プリセットを読み込めません", message))
         # どのウィジェットにフォーカスがあっても \ キーで比べられるよう、アプリ全体のキーを見る
         app = QApplication.instance()
         if app is not None:
@@ -539,6 +577,60 @@ class MainWindow(QMainWindow):
         self._history_timer.stop()
         self._history.reset(self.settings_panel.snapshot())
         self._update_actions()
+
+    # --- プリセット -----------------------------------------------------------
+
+    def save_preset_dialog(self) -> None:
+        """今の加工を、名前を付けてプリセットとして保存する。同じ名前なら上書きを確認する。"""
+        if self.loaded is None:
+            return
+        presets = self.settings_panel.presets()
+        text, ok = QInputDialog.getText(
+            self,
+            "プリセットを保存",
+            "プリセットの名前:",
+            text=default_preset_name(presets),
+        )
+        name = normalize_name(text)
+        if not ok or not name:
+            return
+        if any(preset.name == name for preset in presets):
+            answer = QMessageBox.question(
+                self,
+                "プリセットを保存",
+                f"プリセット「{name}」はすでにあります。上書きしますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        preset = preset_from_settings(name, self.settings_panel.settings())
+        if self._store_presets(upsert_preset(presets, preset)):
+            self._update_status(f"プリセット「{name}」を保存しました")
+
+    def delete_preset(self, name: str) -> None:
+        """プリセットを確認のうえ削除する。"""
+        answer = QMessageBox.question(
+            self,
+            "プリセットを削除",
+            f"プリセット「{name}」を削除しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self._store_presets(remove_preset(self.settings_panel.presets(), name)):
+            self._update_status(f"プリセット「{name}」を削除しました")
+
+    def _store_presets(self, presets: list[Preset]) -> bool:
+        """プリセットの一覧をファイルに書き、メニューに反映する。失敗したら通知して False。"""
+        try:
+            save_presets(self._presets_path, presets)
+        except PresetError as e:  # NFR-04
+            self._show_error("プリセットを保存できません", str(e))
+            return False
+        self.settings_panel.set_presets(presets)
+        return True
 
     def has_unsaved_changes(self) -> bool:
         """初期状態から設定を変えていて、その設定でまだ保存していなければ True。"""

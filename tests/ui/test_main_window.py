@@ -4,7 +4,15 @@ import pytest
 from PIL import Image
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMenu, QMessageBox, QSplitter
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QInputDialog,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QSplitter,
+)
 
 from image_editor.app import create_window
 from image_editor.core.filters import FilterType
@@ -1875,3 +1883,128 @@ def test_rectangle_has_no_mask(loaded_window):
     select_shape_in(loaded_window, ShapeType.ROUNDED)
     select_shape_in(loaded_window, ShapeType.RECTANGLE)
     assert loaded_window.drop_area.crop_overlay.shape_outline() is None
+
+
+# --- プリセット -------------------------------------------------------------------
+
+
+def test_default_preset_name():
+    from image_editor.core.presets import Preset
+    from image_editor.ui.main_window import default_preset_name
+
+    assert default_preset_name([]) == "プリセット 1"
+    assert default_preset_name([Preset(name="プリセット 1")]) == "プリセット 2"
+
+
+def fake_input(monkeypatch, name, ok=True):
+    calls = []
+
+    def get_text(parent, title, label, text=""):
+        calls.append(text)
+        return name, ok
+
+    monkeypatch.setattr(QInputDialog, "getText", get_text)
+    return calls
+
+
+def test_save_preset_and_reload(loaded_window, qtbot, monkeypatch, presets_path):
+    from image_editor.core.presets import load_presets
+
+    panel = loaded_window.settings_panel
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.SEPIA))
+    panel.vignette_slider.setValue(50)
+    calls = fake_input(monkeypatch, "  セピア＋減光  ")
+
+    loaded_window.save_preset_dialog()
+
+    assert calls == ["プリセット 1"]  # 名前の初期値
+    (saved,) = load_presets(presets_path)
+    assert saved.name == "セピア＋減光"
+    assert (saved.filter, saved.vignette) == (FilterType.SEPIA, 50)
+    assert [p.name for p in panel.presets()] == ["セピア＋減光"]
+    assert "プリセット「セピア＋減光」を保存しました" in loaded_window.status_label.text()
+
+    # アプリを再起動しても呼び出せる
+    second = MainWindow()
+    qtbot.addWidget(second)
+    assert [p.name for p in second.settings_panel.presets()] == ["セピア＋減光"]
+
+
+def test_save_preset_cancel(loaded_window, monkeypatch, presets_path):
+    fake_input(monkeypatch, "何か", ok=False)
+    loaded_window.save_preset_dialog()
+    fake_input(monkeypatch, "   ")
+    loaded_window.save_preset_dialog()
+    assert not presets_path.exists()
+
+
+def test_save_preset_overwrite_asks(loaded_window, monkeypatch, questions):
+    fake_input(monkeypatch, "同じ名前")
+    loaded_window.save_preset_dialog()
+    loaded_window.settings_panel.brightness_slider.setValue(40)
+
+    questions["answer"] = QMessageBox.StandardButton.Cancel
+    loaded_window.save_preset_dialog()
+    assert questions["asked"] == 1
+    assert loaded_window.settings_panel.presets()[0].brightness == 0
+
+    questions["answer"] = QMessageBox.StandardButton.Yes
+    loaded_window.save_preset_dialog()
+    assert loaded_window.settings_panel.presets()[0].brightness == 40
+
+
+def test_delete_preset_asks(loaded_window, monkeypatch, questions, presets_path):
+    from image_editor.core.presets import load_presets
+
+    fake_input(monkeypatch, "消すもの")
+    loaded_window.save_preset_dialog()
+
+    questions["answer"] = QMessageBox.StandardButton.Cancel
+    loaded_window.delete_preset("消すもの")
+    assert len(load_presets(presets_path)) == 1
+
+    questions["answer"] = QMessageBox.StandardButton.Yes
+    loaded_window.delete_preset("消すもの")
+    assert load_presets(presets_path) == []
+    assert loaded_window.settings_panel.presets() == []
+
+
+def test_apply_preset_updates_preview(loaded_window, qtbot):
+    from image_editor.core.presets import Preset
+
+    loaded_window.settings_panel.set_presets([Preset(name="白黒", saturation=-100)])
+
+    loaded_window.settings_panel.preset_menu.actions()[0].trigger()
+
+    qtbot.waitUntil(lambda: len(set(preview_pixel(loaded_window, 50, 150))) == 1, timeout=2000)
+    assert loaded_window.has_unsaved_changes()
+    loaded_window.undo()  # プリセットの当てはめも 1 回の操作として戻せる
+    assert loaded_window.settings_panel.saturation_slider.value() == 0
+
+
+def test_save_preset_error_is_shown(loaded_window, monkeypatch, warnings):
+    from image_editor.core.presets import PresetError
+    from image_editor.ui import main_window as module
+
+    def fail(path, presets):
+        raise PresetError("書き込めません")
+
+    monkeypatch.setattr(module, "save_presets", fail)
+    fake_input(monkeypatch, "失敗")
+
+    loaded_window.save_preset_dialog()
+
+    assert warnings and "書き込めません" in warnings[-1][1]
+    assert loaded_window.settings_panel.presets() == []
+
+
+def test_broken_presets_file_is_reported(qtbot, presets_path, warnings):
+    presets_path.parent.mkdir(parents=True)
+    presets_path.write_text("{", encoding="utf-8")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: bool(warnings), timeout=2000)
+
+    assert warnings[-1][0] == "プリセットを読み込めません"
+    assert window.settings_panel.presets() == []
