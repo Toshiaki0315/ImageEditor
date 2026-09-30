@@ -9,6 +9,7 @@ from PIL import Image
 from image_editor.core import effects, filters, frames, shapes, transform
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FRAME_COLOR, FrameType
+from image_editor.core.histogram import Histogram, compute_histogram
 from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import CropRect, Orientation
 
@@ -76,6 +77,19 @@ def render_preview(
 ) -> Image.Image:
     """プレビュー表示用の画像を返す（入力画像は変更しない）。
 
+    詳しくは render_preview_with_histogram。
+    """
+    return render_preview_with_histogram(image, settings, factor, trimmed)[0]
+
+
+def render_preview_with_histogram(
+    image: Image.Image,
+    settings: EditSettings,
+    factor: float = 1.0,
+    trimmed: bool = False,
+) -> tuple[Image.Image, Histogram]:
+    """プレビュー表示用の画像と、保存される写真のヒストグラムを返す（入力画像は変更しない）。
+
     image は原画像を factor 倍に縮小したプレビュー用の画像（回転・反転する前のもの）。
     回転・反転・フィルターの色・周辺減光・経年劣化を適用し、リサイズは適用しない
     （出力サイズは output_size で確認する）。
@@ -85,6 +99,9 @@ def render_preview(
       いつでも選び直せる。形とフレームは反映しない
     - trimmed=True: 切り抜いた範囲だけを表示し、形とフレームも反映して完成形を見せる
       （切り抜く範囲がなければ全体）
+
+    ヒストグラムは、実際に切り抜く範囲（なければ全体）の、形・フレームを付ける前の写真から
+    数える（マスクやフレームの白は含めない。形の外側と透明な画素も数えない）。
     """
     image = settings.orientation.transpose(image)
     scaled = scale_settings(settings, factor)
@@ -108,9 +125,12 @@ def render_preview(
     if settings.aging:
         # 経年劣化は画素ごとの色の変化と固定模様の粒子なので、表示範囲全体にかける
         rendered = effects.aging(rendered, settings.aging)
+    photo = transform.crop(rendered, rect) if rect is not None else rendered
+    shape_mask = shapes.shape_mask(photo.size, settings.shape, settings.corner_radius)
+    histogram = compute_histogram(photo, shape_mask)
     if trimmed:
         rendered = _apply_shape_and_frame(rendered, settings)
-    return rendered
+    return rendered, histogram
 
 
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:

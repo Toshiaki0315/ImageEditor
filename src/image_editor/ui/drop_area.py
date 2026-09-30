@@ -20,8 +20,10 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QLabel, QWidget
 
+from image_editor.core.histogram import Histogram
 from image_editor.core.io import is_supported
 from image_editor.ui.crop_overlay import CropOverlay
+from image_editor.ui.histogram_view import HistogramView
 from image_editor.ui.qt_image import pil_to_qimage
 
 PLACEHOLDER_TEXT = "ここに画像をドロップしてください"
@@ -61,6 +63,8 @@ class DropArea(QWidget):
         self.badge.setStyleSheet(BADGE_STYLE)
         self.badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.badge.hide()
+        # 右下に重ねるヒストグラム（範囲選択のマスクより手前）
+        self.histogram_view = HistogramView(self)
 
     # --- 画像 ---------------------------------------------------------------
 
@@ -85,6 +89,20 @@ class DropArea(QWidget):
     def badge_text(self) -> str | None:
         """表示中の text を返す（表示していなければ None）。"""
         return self.badge.text() if self.badge.isVisible() else None
+
+    def set_histogram(self, histogram: Histogram | None) -> None:
+        """右下にヒストグラムを重ねて表示する。None で消す。"""
+        self.histogram_view.set_histogram(histogram)
+        self._place_histogram()
+        if histogram is not None:
+            self.histogram_view.raise_()
+
+    def _place_histogram(self) -> None:
+        view = self.histogram_view
+        view.move(
+            max(0, self.width() - view.width() - MARGIN),
+            max(0, self.height() - view.height() - MARGIN),
+        )
 
     def _place_badge(self) -> None:
         image_rect = self.image_rect()
@@ -141,6 +159,7 @@ class DropArea(QWidget):
         super().resizeEvent(event)
         self.crop_overlay.setGeometry(self.rect())
         self._place_badge()
+        self._place_histogram()
 
     # --- 描画 ---------------------------------------------------------------
 

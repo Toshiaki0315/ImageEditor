@@ -64,7 +64,7 @@ def test_file_menu_actions(qtbot):
     qtbot.addWidget(window)
 
     menus = [a.menu() for a in window.menuBar().actions() if a.menu()]
-    assert [m.title() for m in menus] == ["ファイル", "編集"]
+    assert [m.title() for m in menus] == ["ファイル", "編集", "表示"]
     texts = [a.text() for a in menus[0].actions() if not a.isSeparator()]
     assert texts == ["開く…", "保存…", "まとめて処理…", "終了"]
     assert window.open_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
@@ -2191,3 +2191,73 @@ def test_saved_image_has_detail(loaded_window, qtbot, tmp_path):
     # 境目 (x = 200) の近くが赤と青の中間の色になる
     r, _, b = saved.getpixel((199, 150))
     assert 40 < r < 220 and 30 < b < 200
+
+
+# --- ヒストグラム ------------------------------------------------------------------
+
+
+def test_histogram_shown_after_load(loaded_window):
+    view = loaded_window.drop_area.histogram_view
+    assert loaded_window.is_histogram_shown()  # 既定は表示
+    assert view.isVisible()
+    histogram = view.histogram()
+    assert histogram is not None
+    assert histogram.total() == 400 * 300
+
+
+def test_histogram_updates_with_adjustments(loaded_window, qtbot):
+    view = loaded_window.drop_area.histogram_view
+    before = view.histogram()
+
+    loaded_window.settings_panel.exposure_slider.setValue(20)  # +2.0 EV
+
+    qtbot.waitUntil(lambda: view.histogram() != before, timeout=2000)
+    after = view.histogram()
+    assert after is not None and before is not None
+    brightest_before = max(v for v in range(256) if before.luma[v])
+    brightest_after = max(v for v in range(256) if after.luma[v])
+    assert brightest_after > brightest_before
+
+
+def test_histogram_counts_crop_range(loaded_window, qtbot):
+    loaded_window.settings_panel.set_crop(CropRect(0, 0, 100, 100))
+    loaded_window.settings_panel.vignette_slider.setValue(1)  # 範囲が見た目に影響する設定
+    loaded_window.update_preview()
+    assert loaded_window.drop_area.histogram_view.histogram().total() == 100 * 100
+
+
+def test_histogram_toggle_is_remembered(loaded_window, qtbot, preferences):
+    action = loaded_window.histogram_action
+    assert action.shortcut() == QKeySequence("Ctrl+Shift+H")
+
+    action.trigger()  # 隠す
+
+    assert not loaded_window.is_histogram_shown()
+    assert not loaded_window.drop_area.histogram_view.isVisible()
+    second = MainWindow()
+    qtbot.addWidget(second)
+    assert not second.is_histogram_shown()
+
+    action.trigger()  # 表示する
+    assert loaded_window.drop_area.histogram_view.isVisible()
+
+
+def test_histogram_hidden_without_image(qtbot, loaded_window, questions):
+    empty = MainWindow()
+    qtbot.addWidget(empty)
+    assert not empty.drop_area.histogram_view.isVisible()
+
+    loaded_window.reset()
+    assert not loaded_window.drop_area.histogram_view.isVisible()
+
+
+def test_histogram_follows_compare(loaded_window):
+    loaded_window.settings_panel.saturation_slider.setValue(-100)
+    loaded_window.update_preview()
+    gray = loaded_window.drop_area.histogram_view.histogram()
+
+    loaded_window.set_comparing(True)
+
+    before = loaded_window.drop_area.histogram_view.histogram()
+    assert before != gray
+    assert before.red[220] > 0  # 加工前は赤 (220, 60, 30) が残る

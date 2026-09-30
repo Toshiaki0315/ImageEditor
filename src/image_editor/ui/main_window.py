@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from image_editor.core.batch import BatchOptions, BatchResult
+from image_editor.core.histogram import Histogram
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
@@ -35,7 +36,7 @@ from image_editor.core.pipeline import (
     effective_crop,
     make_preview,
     output_size,
-    render_preview,
+    render_preview_with_histogram,
 )
 from image_editor.core.presets import (
     Preset,
@@ -89,6 +90,7 @@ PREF_KEEP_EXIF = "save/keep_exif"
 PREF_KEEP_GPS = "save/keep_gps"
 PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
 PREF_DETAIL_EXPANDED = "panel/detail_expanded"  # 設定パネルの「ディテール」を開いているか
+PREF_SHOW_HISTOGRAM = "view/histogram"  # プレビューにヒストグラムを重ねるか
 
 
 PRESETS_FILE = Path.home() / "Library" / "Application Support" / "ImageEditor" / "presets.json"
@@ -178,6 +180,8 @@ class MainWindow(QMainWindow):
         self._history_timer.timeout.connect(self._commit_history)
         # 加工前の画像を表示中か（\ キーか「加工前」ボタンを押している間）
         self._comparing = False
+        # 表示中のプレビューのヒストグラム（保存される写真の分布）
+        self._histogram: Histogram | None = None
 
         self.drop_area = DropArea()
         self.drop_area.files_dropped.connect(self._on_files_dropped)
@@ -285,6 +289,18 @@ class MainWindow(QMainWindow):
         self.redo_action.triggered.connect(self.redo)
         edit_menu.addAction(self.redo_action)
 
+        view_menu = self.menuBar().addMenu("表示")
+
+        # ⌘H は macOS で「隠す」なので ⇧⌘H にする
+        self.histogram_action = QAction("ヒストグラム", self)
+        self.histogram_action.setCheckable(True)
+        self.histogram_action.setShortcut(QKeySequence("Ctrl+Shift+H"))
+        self.histogram_action.setChecked(
+            bool(self._preferences.value(PREF_SHOW_HISTOGRAM, True, type=bool))
+        )
+        self.histogram_action.toggled.connect(self._on_histogram_toggled)
+        view_menu.addAction(self.histogram_action)
+
     # --- 読み込み -------------------------------------------------------------
 
     def open_file_dialog(self) -> None:
@@ -326,9 +342,8 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.set_image_size(loaded.image.size)
         self.drop_area.crop_overlay.set_active(True)
         self.settings_panel.set_image_size(loaded.image.size)
-        self._auto_preview_timer.stop()
-        self.drop_area.set_image(self._preview)
-        self._rendered_key = self._preview_key(self.settings_panel.settings())
+        # 初期状態のプレビューとヒストグラムを描く
+        self.update_preview()
         self._reset_history()
         # macOS のタイトルバーにファイル名と、クリックで場所を示すアイコンを出す
         self.setWindowTitle(f"{path.name} — {WINDOW_TITLE}")
@@ -360,7 +375,7 @@ class MainWindow(QMainWindow):
         settings = self.settings_panel.settings()
         shown = self._before_settings(settings) if self._comparing else settings
         try:
-            rendered = render_preview(
+            rendered, histogram = render_preview_with_histogram(
                 self._preview,
                 shown,
                 self._preview_factor,
@@ -371,8 +386,23 @@ class MainWindow(QMainWindow):
             return
         self._rendered_key = self._preview_key(settings)
         self.drop_area.set_image(rendered)
+        self._histogram = histogram
+        self._show_histogram()
 
     # --- 加工前との比較 ------------------------------------------------------
+
+    def is_histogram_shown(self) -> bool:
+        """プレビューにヒストグラムを重ねて表示する設定かを返す。"""
+        return self.histogram_action.isChecked()
+
+    def _on_histogram_toggled(self, shown: bool) -> None:
+        self._preferences.setValue(PREF_SHOW_HISTOGRAM, shown)
+        self._show_histogram()
+
+    def _show_histogram(self) -> None:
+        """設定が表示で、画像があればヒストグラムを重ねる。"""
+        show = self.is_histogram_shown() and self.loaded is not None
+        self.drop_area.set_histogram(self._histogram if show else None)
 
     def set_comparing(self, comparing: bool) -> None:
         """加工前の画像の表示を切り替える（押している間だけ True にする）。
@@ -607,6 +637,8 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.set_active(False)
         self.drop_area.crop_overlay.set_image_size(None)
         self.drop_area.set_image(None)
+        self._histogram = None
+        self._show_histogram()
         self.setWindowTitle(WINDOW_TITLE)
         self.setWindowFilePath("")
         self.settings_panel.set_image_size(None)
