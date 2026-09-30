@@ -37,8 +37,9 @@ from image_editor.core.effects import (
     VIGNETTE_MIN,
 )
 from image_editor.core.filters import FilterType
-from image_editor.core.pipeline import EditSettings
-from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, clamp_crop, fit_size
+from image_editor.core.frames import FrameType
+from image_editor.core.pipeline import EditSettings, effective_crop
+from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, fit_size
 
 # 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
 BLANK_TEXT = " "
@@ -51,7 +52,8 @@ SLIDER_MIN_WIDTH = 225
 class SettingsPanel(QWidget):
     """編集設定を入力するパネル。入力が変わるたびに settings_changed を発行する。
 
-    幅・高さの初期値はトリミング後のサイズで、その値のままならリサイズしない。
+    幅・高さの初期値はトリミング後のサイズ（フレームがあれば写真部分の比率に切り抜いた後の
+    サイズ）で、その値のままならリサイズしない。
     """
 
     settings_changed = pyqtSignal(object)  # EditSettings
@@ -115,9 +117,13 @@ class SettingsPanel(QWidget):
         )
         self.contrast_slider.setValue(0)
         self.contrast_value_label.setText(_signed_text(0))
+        self.frame_combo = QComboBox()
+        for frame_type in FrameType:
+            self.frame_combo.addItem(frame_type.label, frame_type)
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
         filter_form.addRow(self.filter_combo)
+        filter_form.addRow("フレーム", self.frame_combo)
         filter_form.addRow("露出", exposure_row)
         filter_form.addRow("明るさ", brightness_row)
         filter_form.addRow("コントラスト", contrast_row)
@@ -164,6 +170,8 @@ class SettingsPanel(QWidget):
         self.height_spin.valueChanged.connect(lambda _: self._on_size_edited("height"))
         self.keep_aspect_check.toggled.connect(self._on_keep_aspect_toggled)
         self.filter_combo.currentIndexChanged.connect(lambda _: self._emit_changed())
+        # フレームを変えると写真部分の比率への切り抜きが変わるので、トリミングと同じく扱う
+        self.frame_combo.currentIndexChanged.connect(lambda _: self._on_crop_edited())
         for spin in self._crop_spins():
             spin.valueChanged.connect(lambda _: self._on_crop_edited())
         self.clear_crop_button.clicked.connect(self.clear_crop)
@@ -198,6 +206,7 @@ class SettingsPanel(QWidget):
                 spin.setValue(0)
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
+            self.frame_combo.setCurrentIndex(0)
             self.vignette_slider.setValue(0)
             self.aging_slider.setValue(0)
             self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
@@ -243,14 +252,23 @@ class SettingsPanel(QWidget):
             brightness=self.brightness_slider.value(),
             exposure=self.exposure_ev(),
             contrast=self.contrast_slider.value(),
+            frame=self.frame(),
         )
 
     def base_size(self) -> tuple[int, int]:
-        """リサイズ前のサイズ（トリミング後のサイズ。トリミングなしなら原寸）を返す。"""
+        """リサイズ前のサイズを返す。
+
+        トリミング後のサイズ（フレームがあれば写真部分の比率に切り抜いた後のサイズ）。
+        切り抜かないなら原寸。
+        """
         if self._image_size is None:
             return (MIN_SIZE, MIN_SIZE)
         rect = self._effective_crop()
         return (rect.width, rect.height) if rect else self._image_size
+
+    def frame(self) -> FrameType:
+        """選ばれているフレームを返す。"""
+        return self.frame_combo.currentData()
 
     def set_crop(self, rect: CropRect | None) -> None:
         """トリミング範囲を設定する（原画像の座標系）。None で解除。"""
@@ -342,9 +360,9 @@ class SettingsPanel(QWidget):
             self.trim_view_toggled.emit(checked)
 
     def _update_trim_button(self) -> None:
-        """トリミング範囲があるときだけ「トリミング実行」を押せるようにする。
+        """トリミング範囲かフレームがあるときだけ「トリミング実行」を押せるようにする。
 
-        範囲がなくなったら全体表示に戻す。
+        どちらもなくなったら全体表示に戻す。
         """
         has_crop = self._image_size is not None and self._effective_crop() is not None
         if not has_crop and self.trim_button.isChecked():
@@ -397,10 +415,9 @@ class SettingsPanel(QWidget):
         return CropRect(self.crop_x_spin.value(), self.crop_y_spin.value(), width, height)
 
     def _effective_crop(self) -> CropRect | None:
-        rect = self._crop_rect()
-        if rect is None or self._image_size is None:
+        if self._image_size is None:
             return None
-        return clamp_crop(rect, self._image_size)
+        return effective_crop(self._image_size, self._crop_rect(), self.frame())
 
     def _crop_spins(self) -> tuple[QSpinBox, ...]:
         return (self.crop_x_spin, self.crop_y_spin, self.crop_width_spin, self.crop_height_spin)

@@ -1,6 +1,7 @@
 import pytest
 
 from image_editor.core.filters import FilterType
+from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.transform import CropRect
 from image_editor.ui.settings_panel import SettingsPanel
@@ -337,6 +338,72 @@ def test_trim_view_does_not_change_settings(panel):
 def test_set_trim_view_ignored_without_crop(panel):
     panel.set_trim_view(True)
     assert not panel.is_trim_view()
+
+
+# --- フレーム -----------------------------------------------------------------
+
+
+def select_frame(panel: SettingsPanel, frame: FrameType) -> None:
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(frame))
+
+
+def test_frame_combo_has_labels(panel):
+    labels = [panel.frame_combo.itemText(i) for i in range(panel.frame_combo.count())]
+    assert labels == ["なし", "ポラロイド", "チェキ"]
+    assert panel.settings().frame is FrameType.NONE
+
+
+def test_frame_selection_emits_settings(panel, qtbot):
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        select_frame(panel, FrameType.INSTAX_MINI)
+
+    assert blocker.args[0].frame is FrameType.INSTAX_MINI
+    assert panel.settings().filter is FilterType.NONE  # テイストとは別の設定
+
+
+def test_frame_updates_base_size(panel):
+    # 400x300 はポラロイドの写真部分（正方形）に合わせて 300x300 に切り抜く
+    select_frame(panel, FrameType.POLAROID)
+
+    assert panel.base_size() == (300, 300)
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (300, 300)
+    assert panel.settings().width is None  # 初期値のままならリサイズしない
+
+    select_frame(panel, FrameType.INSTAX_MINI)
+    assert panel.base_size() == (400, 297)  # 横向きのチェキ 62:46（上下を削る）
+
+    select_frame(panel, FrameType.NONE)
+    assert panel.base_size() == (400, 300)
+
+
+def test_frame_uses_crop_range(panel):
+    panel.set_crop(CropRect(0, 0, 200, 100))
+    select_frame(panel, FrameType.POLAROID)
+    assert panel.base_size() == (100, 100)
+
+
+def test_frame_keeps_aspect_of_edited_size(panel):
+    panel.width_spin.setValue(200)
+    select_frame(panel, FrameType.POLAROID)
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (200, 200)
+
+
+def test_trim_button_is_enabled_by_frame(panel):
+    select_frame(panel, FrameType.POLAROID)
+    assert panel.trim_button.isEnabled()
+
+    panel.set_trim_view(True)
+    select_frame(panel, FrameType.NONE)
+
+    assert not panel.trim_button.isEnabled()
+    assert not panel.is_trim_view()
+
+
+def test_frame_is_reset_on_new_image(panel):
+    select_frame(panel, FrameType.POLAROID)
+    panel.set_image_size((200, 200))
+    assert panel.frame_combo.currentIndex() == 0
+    assert panel.settings().frame is FrameType.NONE
 
 
 # --- 経年劣化 -----------------------------------------------------------------

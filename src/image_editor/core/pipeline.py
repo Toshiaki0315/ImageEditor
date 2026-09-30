@@ -6,8 +6,9 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
-from image_editor.core import effects, filters, transform
+from image_editor.core import effects, filters, frames, transform
 from image_editor.core.filters import FilterType
+from image_editor.core.frames import FrameType
 from image_editor.core.transform import CropRect
 
 PREVIEW_MAX_SIDE = 1600
@@ -29,17 +30,18 @@ class EditSettings:
     brightness: int = 0  # 明るさ -100〜+100（0 = 変化なし）
     contrast: int = 0  # コントラスト -100〜+100（0 = 変化なし）
     exposure: float = 0.0  # 露出 -5.0〜+5.0 EV（0 = 変化なし）
+    frame: FrameType = FrameType.NONE
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
-    処理順: トリミング → リサイズ → 露出 → 明るさ → コントラスト → 色温度 → 彩度
-    → フィルター → 周辺減光 → 経年劣化 → ポラロイドの白枠。
-    白枠には周辺減光・経年劣化をかけない。
+    処理順: トリミング（フレームの写真部分の比率への切り抜きを含む）→ リサイズ → 露出
+    → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光 → 経年劣化 → フレーム。
+    フレームには周辺減光・経年劣化をかけない。
     """
     image = original
-    rect = _effective_crop(original.size, settings)
+    rect = effective_crop(original.size, settings.crop, settings.frame)
     if rect is not None:
         image = transform.crop(image, rect)
 
@@ -50,13 +52,13 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     # 写真アプリの基本補正と同じく、露出〜彩度はフィルターの前に整える
     image = _apply_basic_adjustments(image, settings)
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
-    image = filters.apply_filter(image, settings.filter, with_border=False)
+    image = filters.apply_filter(image, settings.filter)
     if settings.vignette:
         image = effects.vignette(image, settings.vignette)
     if settings.aging:
         image = effects.aging(image, settings.aging)
-    if settings.filter is FilterType.POLAROID:
-        image = filters.polaroid_frame(image)
+    if settings.frame is not FrameType.NONE:
+        image = frames.add_frame(image, settings.frame)
     return image
 
 
@@ -69,17 +71,17 @@ def render_preview(
     """プレビュー表示用の画像を返す（入力画像は変更しない）。
 
     image は原画像を factor 倍に縮小したプレビュー用の画像。フィルターの色・周辺減光・
-    経年劣化を適用し、リサイズとポラロイドの白枠は適用しない（出力サイズは output_size で
-    確認する）。
+    経年劣化を適用し、リサイズは適用しない（出力サイズは output_size で確認する）。
 
-    - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（なければ全体）を
-      基準にかけ、トリミング範囲はいつでも選び直せる
-    - trimmed=True: トリミング範囲だけを切り抜いて表示する（範囲がなければ全体）
+    - trimmed=False: 元の画角全体を表示する。周辺減光はトリミング範囲（フレームがあれば
+      その写真部分の比率に切り抜いた範囲。なければ全体）を基準にかけ、トリミング範囲は
+      いつでも選び直せる。フレームは付けない
+    - trimmed=True: 切り抜いた範囲だけを表示し、フレームも付けて完成形を見せる
+      （範囲もフレームもなければ全体）
     """
-    rect = _effective_crop(image.size, scale_settings(settings, factor))
-    rendered = filters.apply_filter(
-        _apply_basic_adjustments(image, settings), settings.filter, with_border=False
-    )
+    scaled = scale_settings(settings, factor)
+    rect = effective_crop(image.size, scaled.crop, scaled.frame)
+    rendered = filters.apply_filter(_apply_basic_adjustments(image, settings), settings.filter)
     if trimmed and rect is not None:
         rendered = transform.crop(rendered, rect)
         rect = None
@@ -94,17 +96,35 @@ def render_preview(
     if settings.aging:
         # 経年劣化は画素ごとの色の変化と固定模様の粒子なので、表示範囲全体にかける
         rendered = effects.aging(rendered, settings.aging)
+    if trimmed and settings.frame is not FrameType.NONE:
+        rendered = frames.add_frame(rendered, settings.frame)
     return rendered
 
 
 def output_size(original_size: tuple[int, int], settings: EditSettings) -> tuple[int, int]:
-    """画像を処理せずに、apply_edits の出力サイズを計算する（ポラロイドの枠を含む）。"""
+    """画像を処理せずに、apply_edits の出力サイズを計算する（フレームを含む）。"""
     size = original_size
-    rect = _effective_crop(original_size, settings)
+    rect = effective_crop(original_size, settings.crop, settings.frame)
     if rect is not None:
         size = (rect.width, rect.height)
     size = transform.fit_size(size, settings.width, settings.height, settings.keep_aspect)
-    return filters.output_size(size, settings.filter)
+    return frames.framed_size(size, settings.frame)
+
+
+def effective_crop(
+    size: tuple[int, int], crop: CropRect | None, frame: FrameType = FrameType.NONE
+) -> CropRect | None:
+    """実際に切り抜く範囲を返す（size の画像の座標系）。切り抜かないなら None。
+
+    トリミング範囲は画像内に収まるよう補正する。フレームがあるときは、トリミング範囲
+    （なければ画像全体）をフレームの写真部分の縦横比になるよう中央で切り抜く。
+    """
+    rect = transform.clamp_crop(crop, size) if crop is not None else None
+    base = rect or CropRect(0, 0, *size)
+    aspect = frames.window_aspect(frame, (base.width, base.height))
+    if aspect is None:
+        return rect
+    return transform.fit_aspect(base, aspect)
 
 
 def scale_settings(settings: EditSettings, factor: float) -> EditSettings:
@@ -171,12 +191,6 @@ def _apply_basic_adjustments(image: Image.Image, settings: EditSettings) -> Imag
     if settings.saturation:
         image = effects.saturation(image, settings.saturation)
     return image
-
-
-def _effective_crop(size: tuple[int, int], settings: EditSettings) -> CropRect | None:
-    if settings.crop is None:
-        return None
-    return transform.clamp_crop(settings.crop, size)
 
 
 def _scale(value: int, factor: float) -> int:

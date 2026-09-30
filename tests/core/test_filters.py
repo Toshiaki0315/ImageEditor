@@ -8,8 +8,6 @@ from image_editor.core.filters import (
     FilterType,
     add_grain,
     apply_filter,
-    output_size,
-    polaroid_border_sizes,
 )
 
 WHITE = (255, 255, 255)
@@ -113,38 +111,22 @@ def test_high_tone_is_brighter():
     assert sum(gray_after) > sum(gray_before)
 
 
-def test_polaroid():
+def test_polaroid_changes_only_color():
     image = make_sample()
-    border, bottom = polaroid_border_sizes(image.size)
 
     result = apply_filter(image, FilterType.POLAROID)
 
-    assert (border, bottom) == (5, 20)  # 短辺 100 の 5% / 20%
+    # 白枠は付けない（フレームは core.frames で付ける）
     assert result.mode == "RGB"
-    assert result.size == (200 + 5 * 2, 100 + 5 + 20)
-    assert result.size == output_size(image.size, FilterType.POLAROID)
-    assert bottom > border
-    # 白枠
-    assert result.getpixel((0, 0)) == WHITE
-    assert result.getpixel((result.width - 1, 50)) == WHITE
-    assert result.getpixel((100, result.height - 1)) == WHITE
-    assert result.getpixel((100, 100 + 5 + 10)) == WHITE
-    # 中身は黄みがかる（グレーの R > B）
-    r, _, b = result.getpixel((5 + 175, 5 + 50))
+    assert result.size == image.size
+    # 黄みがかる（グレーの R > B）
+    r, _, b = result.getpixel((175, 50))
     assert r > b
 
 
-def test_polaroid_portrait_uses_short_side():
-    assert polaroid_border_sizes((100, 400)) == (5, 20)
-
-
-def test_polaroid_border_min_1px():
-    assert polaroid_border_sizes((4, 4)) == (1, 1)
-
-
-@pytest.mark.parametrize("filter_type", [f for f in FilterType if f is not FilterType.POLAROID])
-def test_output_size_unchanged(filter_type):
-    assert output_size((200, 100), filter_type) == (200, 100)
+@pytest.mark.parametrize("filter_type", list(FilterType))
+def test_size_is_unchanged(filter_type):
+    assert apply_filter(make_sample(), filter_type).size == (200, 100)
 
 
 # --- アルファ ----------------------------------------------------------------
@@ -160,19 +142,8 @@ def test_alpha_is_preserved(filter_type):
     result = apply_filter(image, filter_type)
 
     assert result.mode == "RGBA"
-    offset = (5, 5) if filter_type is FilterType.POLAROID else (0, 0)
-    alphas = [p[3] for p in sample_points(result, offset)]
+    alphas = [p[3] for p in sample_points(result, (0, 0))]
     assert alphas == [200, 200, 0, 0]
-
-
-def test_polaroid_border_is_opaque():
-    image = Image.new("RGBA", (100, 100), (255, 0, 0, 0))
-
-    result = apply_filter(image, FilterType.POLAROID)
-
-    assert result.getpixel((0, 0)) == (*WHITE, 255)
-    assert result.getpixel((50, result.height - 1)) == (*WHITE, 255)
-    assert result.getpixel((50, 50))[3] == 0
 
 
 @pytest.mark.parametrize("mode", ["L", "P", "LA"])
@@ -207,39 +178,6 @@ def test_core_filters_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
-
-
-# --- 白枠なし（プレビュー用） ---------------------------------------------------
-
-
-def test_polaroid_without_border_keeps_size():
-    image = make_sample()
-
-    result = apply_filter(image, FilterType.POLAROID, with_border=False)
-    framed = apply_filter(image, FilterType.POLAROID)
-
-    assert result.size == image.size
-    # 色補正は白枠ありと同じ
-    assert result.getpixel((175, 50)) == framed.getpixel((5 + 175, 5 + 50))
-
-
-def test_polaroid_without_border_keeps_alpha():
-    image = make_sample("RGBA")
-    image.putalpha(100)
-
-    result = apply_filter(image, FilterType.POLAROID, with_border=False)
-
-    assert result.mode == "RGBA"
-    assert result.getpixel((0, 0))[3] == 100
-
-
-@pytest.mark.parametrize("filter_type", [f for f in FilterType if f is not FilterType.POLAROID])
-def test_with_border_has_no_effect_on_other_filters(filter_type):
-    image = make_sample()
-    assert (
-        apply_filter(image, filter_type, with_border=False).tobytes()
-        == apply_filter(image, filter_type).tobytes()
-    )
 
 
 # --- ポジフィルム風・レトロカメラ風 -------------------------------------------------
