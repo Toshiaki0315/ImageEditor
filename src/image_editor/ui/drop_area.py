@@ -18,7 +18,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QResizeEvent,
 )
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QLabel, QWidget
 
 from image_editor.core.io import is_supported
 from image_editor.ui.crop_overlay import CropOverlay
@@ -29,6 +29,10 @@ MARGIN = 16
 BORDER_RADIUS = 12
 HIGHLIGHT_FILL_ALPHA = 40
 # 透過部分の市松模様（1 マスの大きさは論理ピクセル）
+BADGE_MARGIN = 8  # 画像の左上から「加工前」などの表示までの間隔
+BADGE_STYLE = (
+    "QLabel { background: rgba(0, 0, 0, 160); color: white; border-radius: 4px; padding: 2px 8px; }"
+)
 CHECKER_SIZE = 8
 CHECKER_LIGHT = QColor(255, 255, 255)
 CHECKER_DARK = QColor(204, 204, 204)
@@ -52,6 +56,11 @@ class DropArea(QWidget):
         self._checker: QBrush | None = None
         # トリミング範囲の選択（既定は無効）
         self.crop_overlay = CropOverlay(self.image_rect, self)
+        # 画像の左上に重ねる表示（「加工前」など）。範囲選択のマスクより手前に出す
+        self.badge = QLabel(self)
+        self.badge.setStyleSheet(BADGE_STYLE)
+        self.badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.badge.hide()
 
     # --- 画像 ---------------------------------------------------------------
 
@@ -59,7 +68,28 @@ class DropArea(QWidget):
         """表示する画像を設定する。None で未読込の表示に戻す。"""
         self._source = None if image is None else pil_to_qimage(image)
         self._cache = None
+        self._place_badge()
         self.update()
+
+    def set_badge(self, text: str | None) -> None:
+        """画像の左上に text を重ねて表示する。None で消す。"""
+        if text is None:
+            self.badge.hide()
+            return
+        self.badge.setText(text)
+        self.badge.adjustSize()
+        self._place_badge()
+        self.badge.show()
+        self.badge.raise_()
+
+    def badge_text(self) -> str | None:
+        """表示中の text を返す（表示していなければ None）。"""
+        return self.badge.text() if self.badge.isVisible() else None
+
+    def _place_badge(self) -> None:
+        image_rect = self.image_rect()
+        origin = image_rect.topLeft() if not image_rect.isEmpty() else QRectF(self.rect()).topLeft()
+        self.badge.move(round(origin.x()) + BADGE_MARGIN, round(origin.y()) + BADGE_MARGIN)
 
     def has_image(self) -> bool:
         """画像が設定されているかを返す。"""
@@ -110,6 +140,7 @@ class DropArea(QWidget):
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         super().resizeEvent(event)
         self.crop_overlay.setGeometry(self.rect())
+        self._place_badge()
 
     # --- 描画 ---------------------------------------------------------------
 

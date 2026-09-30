@@ -95,6 +95,7 @@ class SettingsPanel(QWidget):
     settings_changed = pyqtSignal(object)  # EditSettings
     save_requested = pyqtSignal()
     reset_requested = pyqtSignal()
+    compare_toggled = pyqtSignal(bool)  # 「加工前」ボタンを押している間だけ True
     trim_view_toggled = pyqtSignal(bool)  # True: 切り抜き後の表示、False: 全体表示
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -229,7 +230,11 @@ class SettingsPanel(QWidget):
         # ボタン（プレビューは設定の変更に合わせて自動で更新するので、更新ボタンは置かない）
         self.save_button = QPushButton("保存")
         self.reset_button = QPushButton("リセット")
+        # 押している間だけ加工前の画像を表示する（\ キーでも同じ）
+        self.compare_button = QPushButton("加工前")
+        self.compare_button.setToolTip("押している間だけ加工前の画像を表示します（\\ キー）")
         buttons = QHBoxLayout()
+        buttons.addWidget(self.compare_button)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.reset_button)
 
@@ -268,6 +273,8 @@ class SettingsPanel(QWidget):
             button.clicked.connect(lambda _, op=op: self.apply_orientation(op))
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
+        self.compare_button.pressed.connect(lambda: self.compare_toggled.emit(True))
+        self.compare_button.released.connect(lambda: self.compare_toggled.emit(False))
 
         self.set_image_size(None)
 
