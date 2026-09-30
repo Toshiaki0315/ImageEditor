@@ -3,6 +3,7 @@
 from typing import Literal
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -105,37 +106,35 @@ class SettingsPanel(QWidget):
         self.filter_combo = QComboBox()
         for filter_type in FilterType:
             self.filter_combo.addItem(filter_type.label, filter_type)
+        # スライダーはダブルクリックで既定値に戻る
         self.vignette_slider, self.vignette_value_label, vignette_row = _amount_slider(
             VIGNETTE_MIN, VIGNETTE_MAX
         )
         self.aging_slider, self.aging_value_label, aging_row = _amount_slider(AGING_MIN, AGING_MAX)
         # 色温度は 100K 刻み。スライダーの値は「ケルビン ÷ 100」で持つ
         self.temperature_slider, self.temperature_value_label, temperature_row = _amount_slider(
-            TEMPERATURE_MIN // TEMPERATURE_STEP, TEMPERATURE_MAX // TEMPERATURE_STEP
+            TEMPERATURE_MIN // TEMPERATURE_STEP,
+            TEMPERATURE_MAX // TEMPERATURE_STEP,
+            default=TEMPERATURE_NEUTRAL // TEMPERATURE_STEP,
         )
         self.temperature_slider.setPageStep(5)
-        self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
         self.temperature_value_label.setText(_kelvin_text(TEMPERATURE_NEUTRAL))
         self.saturation_slider, self.saturation_value_label, saturation_row = _amount_slider(
             SATURATION_MIN, SATURATION_MAX
         )
-        self.saturation_slider.setValue(0)
         self.saturation_value_label.setText(_signed_text(0))
         self.brightness_slider, self.brightness_value_label, brightness_row = _amount_slider(
             BRIGHTNESS_MIN, BRIGHTNESS_MAX
         )
-        self.brightness_slider.setValue(0)
         self.brightness_value_label.setText(_signed_text(0))
         # 露出は 0.1 EV 刻み。スライダーの値は「EV × 10」で持つ
         self.exposure_slider, self.exposure_value_label, exposure_row = _amount_slider(
             round(EXPOSURE_MIN / EXPOSURE_STEP), round(EXPOSURE_MAX / EXPOSURE_STEP)
         )
-        self.exposure_slider.setValue(0)
         self.exposure_value_label.setText(_ev_text(0.0))
         self.contrast_slider, self.contrast_value_label, contrast_row = _amount_slider(
             CONTRAST_MIN, CONTRAST_MAX
         )
-        self.contrast_slider.setValue(0)
         self.contrast_value_label.setText(_signed_text(0))
         self.frame_combo = QComboBox()
         for frame_type in FrameType:
@@ -145,10 +144,9 @@ class SettingsPanel(QWidget):
             self.shape_combo.addItem(shape_type.label, shape_type)
         # 角丸の半径（短辺に対する %）。形が角丸のときだけ操作できる
         self.corner_slider, self.corner_value_label, corner_row = _amount_slider(
-            CORNER_RADIUS_MIN, CORNER_RADIUS_MAX
+            CORNER_RADIUS_MIN, CORNER_RADIUS_MAX, default=CORNER_RADIUS_DEFAULT
         )
         self.corner_slider.setPageStep(5)
-        self.corner_slider.setValue(CORNER_RADIUS_DEFAULT)
         self.corner_value_label.setText(_percent_text(CORNER_RADIUS_DEFAULT))
         filter_box = QGroupBox("加工")
         filter_form = QFormLayout(filter_box)
@@ -163,6 +161,9 @@ class SettingsPanel(QWidget):
         filter_form.addRow("彩度", saturation_row)
         filter_form.addRow("周辺減光", vignette_row)
         filter_form.addRow("経年劣化", aging_row)
+        # テイストと色のスライダーだけを戻す（フレーム・形・角丸は切り抜きに関わるので残す）
+        self.reset_adjustments_button = QPushButton("加工をリセット")
+        filter_form.addRow(self.reset_adjustments_button)
 
         # トリミング
         self.crop_x_spin = _spin_box(0, MAX_SIZE, " px")
@@ -233,6 +234,7 @@ class SettingsPanel(QWidget):
         self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
         self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
         self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
+        self.reset_adjustments_button.clicked.connect(self.reset_adjustments)
         self.save_button.clicked.connect(self.save_requested)
         self.reset_button.clicked.connect(self.reset_requested)
 
@@ -262,14 +264,9 @@ class SettingsPanel(QWidget):
             self.aspect_combo.setCurrentIndex(0)
             self.portrait_check.setChecked(False)
             self.shape_combo.setCurrentIndex(0)
-            self.corner_slider.setValue(CORNER_RADIUS_DEFAULT)
-            self.vignette_slider.setValue(0)
-            self.aging_slider.setValue(0)
-            self.temperature_slider.setValue(TEMPERATURE_NEUTRAL // TEMPERATURE_STEP)
-            self.saturation_slider.setValue(0)
-            self.brightness_slider.setValue(0)
-            self.exposure_slider.setValue(0)
-            self.contrast_slider.setValue(0)
+            self.corner_slider.reset()
+            for slider in self._adjustment_sliders():
+                slider.reset()
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -379,6 +376,17 @@ class SettingsPanel(QWidget):
         if enabled and not self.trim_button.isEnabled():
             return
         self.trim_button.setChecked(enabled)
+
+    def reset_adjustments(self) -> None:
+        """テイストと色のスライダー（露出〜経年劣化）を既定値に戻す。
+
+        画像・サイズ変更・トリミング・フレーム・形・角丸はそのまま残す。変更は 1 回だけ通知する。
+        """
+        with self._block():
+            self.filter_combo.setCurrentIndex(0)
+            for slider in self._adjustment_sliders():
+                slider.reset()
+        self._emit_changed()
 
     def set_busy(self, busy: bool) -> None:
         """処理中はボタンを無効化する。"""
@@ -622,6 +630,18 @@ class SettingsPanel(QWidget):
             return None
         return effective_crop(self._image_size, self._crop_rect(), self.frame(), self.shape())
 
+    def _adjustment_sliders(self) -> tuple["ResettableSlider", ...]:
+        """色を変えるスライダー（「加工をリセット」で戻すもの）。"""
+        return (
+            self.exposure_slider,
+            self.brightness_slider,
+            self.contrast_slider,
+            self.temperature_slider,
+            self.saturation_slider,
+            self.vignette_slider,
+            self.aging_slider,
+        )
+
     def _crop_spins(self) -> tuple[QSpinBox, ...]:
         return (self.crop_x_spin, self.crop_y_spin, self.crop_width_spin, self.crop_height_spin)
 
@@ -671,10 +691,39 @@ def _kelvin_text(kelvin: int) -> str:
     return f"{kelvin} K"
 
 
-def _amount_slider(minimum: int, maximum: int) -> tuple[QSlider, QLabel, QHBoxLayout]:
-    """強さを指定するスライダーと、現在値を表示するラベルを横に並べて返す。"""
-    slider = QSlider(Qt.Orientation.Horizontal)
+class ResettableSlider(QSlider):
+    """ダブルクリックで既定値に戻る横向きのスライダー。"""
+
+    def __init__(self, default: int, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._default = default
+
+    def default_value(self) -> int:
+        """既定値を返す。"""
+        return self._default
+
+    def reset(self) -> None:
+        """既定値に戻す（変われば valueChanged を発行する）。"""
+        self.setValue(self._default)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.reset()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+def _amount_slider(
+    minimum: int, maximum: int, default: int = 0
+) -> tuple[ResettableSlider, QLabel, QHBoxLayout]:
+    """強さを指定するスライダーと、現在値を表示するラベルを横に並べて返す。
+
+    スライダーは default で始まり、ダブルクリックで default に戻る。
+    """
+    slider = ResettableSlider(default)
     slider.setRange(minimum, maximum)
+    slider.setValue(default)
     slider.setPageStep(10)
     slider.setMinimumWidth(SLIDER_MIN_WIDTH)
     label = QLabel(str(minimum))
