@@ -37,13 +37,14 @@ src/image_editor/
   core/                  # ★ Qt に依存しない純粋な画像処理層
     io.py                # 読み込み・保存・モード変換・EXIF 回転補正・EXIF の保持・保存先の名前
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
-    effects.py           # 露出・明るさ・コントラスト・色温度・彩度・周辺減光・経年劣化
+    effects.py           # 露出・明るさ・コントラスト・色温度・彩度・ディテール（シャープ・ぼかし・ノイズ除去）・周辺減光・経年劣化
     transform.py         # 回転・反転・リサイズ・トリミング・縦横比
     shapes.py            # 形（角丸・円）の切り抜き
     frames.py            # フレーム（ポラロイド・チェキ）
     pipeline.py          # EditSettings (dataclass) と apply_edits()
     presets.py           # 加工設定のプリセット（名前付きの加工の組み合わせ）の保存・読み込み
     batch.py             # 複数の画像に同じ加工をまとめて適用して保存する（一括処理）
+    histogram.py         # ヒストグラム（R・G・B・輝度の分布）の計算
   ui/                    # PyQt6 のウィジェット
     main_window.py
     drop_area.py         # D&D + プレビュー表示
@@ -52,6 +53,7 @@ src/image_editor/
     qt_image.py          # PIL.Image <-> QPixmap 変換
     worker.py            # 原寸処理・保存・一括処理のワーカー (QRunnable)
     batch_dialog.py      # 一括処理の設定ダイアログ
+    histogram_view.py    # プレビューに重ねるヒストグラム
     history.py           # アンドゥ／リドゥの履歴（Qt に依存しない）
 tests/
   core/                  # core は必ずユニットテストを書く
