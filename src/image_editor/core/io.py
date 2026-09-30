@@ -39,7 +39,18 @@ _OPAQUE_FORMATS = frozenset({"JPEG", "BMP"})
 _ALPHA_MODES = frozenset({"RGBA", "LA", "PA", "RGBa", "La"})
 
 DEFAULT_JPEG_QUALITY = 90
+JPEG_QUALITY_MIN = 1
+JPEG_QUALITY_MAX = 100
 _WHITE = (255, 255, 255)
+
+# EXIF を書き込める保存形式
+_EXIF_FORMATS = frozenset({"JPEG", "PNG", "TIFF"})
+# EXIF のタグ
+_TAG_ORIENTATION = 0x0112
+_TAG_EXIF_IFD = 0x8769
+_TAG_GPS_IFD = 0x8825
+_TAG_PIXEL_X = 0xA002  # Exif IFD の画像の幅
+_TAG_PIXEL_Y = 0xA003  # Exif IFD の画像の高さ
 
 
 class UnsupportedImageError(Exception):
@@ -54,6 +65,16 @@ class LoadedImage:
     format: str
     is_animated: bool
     path: Path
+    exif: bytes | None = None  # 元ファイルの EXIF（なければ None）
+
+
+@dataclass(frozen=True)
+class SaveOptions:
+    """保存時の設定。"""
+
+    quality: int = DEFAULT_JPEG_QUALITY  # JPEG の品質 1〜100
+    keep_exif: bool = True  # 撮影日時などの EXIF を残す（JPEG・PNG・TIFF）
+    keep_gps: bool = False  # EXIF を残すとき、位置情報 (GPS) も残す
 
 
 def is_supported(path: StrPath) -> bool:
@@ -86,6 +107,7 @@ def load_image(path: StrPath) -> LoadedImage:
                 raise UnsupportedImageError(f"対応していない画像形式です: {source.format}")
             is_animated = getattr(source, "n_frames", 1) > 1
             source.seek(0)
+            exif = _read_exif(source)
             # exif_transpose は常に新しい画像を返すので、ファイルを閉じても使える
             image = ImageOps.exif_transpose(source)
             image.load()
@@ -99,6 +121,7 @@ def load_image(path: StrPath) -> LoadedImage:
         format=file_format,
         is_animated=is_animated,
         path=path,
+        exif=exif,
     )
 
 
@@ -114,11 +137,22 @@ def normalize_mode(image: Image.Image) -> Image.Image:
     return image.convert("RGB")
 
 
-def save_image(image: Image.Image, path: StrPath, quality: int = DEFAULT_JPEG_QUALITY) -> None:
+def save_image(
+    image: Image.Image,
+    path: StrPath,
+    quality: int = DEFAULT_JPEG_QUALITY,
+    exif: bytes | None = None,
+) -> None:
     """拡張子から形式を決めて画像を保存する。
 
-    JPEG / BMP では透過を白背景に合成して RGB で保存する。
+    JPEG / BMP では透過を白背景に合成して RGB で保存する。quality は JPEG の品質
+    （1〜100、範囲外なら ValueError）。exif を渡すと JPEG・PNG・TIFF に書き込む
+    （prepare_exif で整えたものを渡す）。
     """
+    if not JPEG_QUALITY_MIN <= quality <= JPEG_QUALITY_MAX:
+        raise ValueError(
+            f"quality は {JPEG_QUALITY_MIN}〜{JPEG_QUALITY_MAX} で指定してください: {quality}"
+        )
     path = Path(path)
     file_format = format_for_path(path)
 
@@ -128,8 +162,41 @@ def save_image(image: Image.Image, path: StrPath, quality: int = DEFAULT_JPEG_QU
     options: dict[str, object] = {}
     if file_format == "JPEG":
         options["quality"] = quality
+    if exif is not None and file_format in _EXIF_FORMATS:
+        options["exif"] = exif
 
     image.save(path, format=file_format, **options)
+
+
+def prepare_exif(exif: bytes, size: tuple[int, int], keep_gps: bool = False) -> bytes:
+    """元画像の EXIF を、編集後の画像に書き込める形に整えて返す（元のデータは変えない）。
+
+    - 向き (Orientation) は読み込み時に補正済みなので 1（そのまま）にする
+    - Exif IFD の画像の幅・高さを size に合わせる
+    - keep_gps が False なら位置情報 (GPS) を取り除く
+    撮影日時・カメラなどのそれ以外のタグは残す。
+    """
+    data = Image.Exif()
+    data.load(exif)
+    data[_TAG_ORIENTATION] = 1
+    if not keep_gps and _TAG_GPS_IFD in data:
+        del data[_TAG_GPS_IFD]
+    if _TAG_EXIF_IFD in data:
+        exif_ifd = data.get_ifd(_TAG_EXIF_IFD)
+        if _TAG_PIXEL_X in exif_ifd:
+            exif_ifd[_TAG_PIXEL_X] = size[0]
+        if _TAG_PIXEL_Y in exif_ifd:
+            exif_ifd[_TAG_PIXEL_Y] = size[1]
+    return data.tobytes()
+
+
+def _read_exif(source: Image.Image) -> bytes | None:
+    """画像の EXIF を返す。なければ、または壊れていて読めなければ None。"""
+    try:
+        exif = source.getexif()
+        return exif.tobytes() if len(exif) else None
+    except Exception:  # EXIF が壊れていても画像は読み込めるようにする
+        return None
 
 
 def flatten_alpha(image: Image.Image, background: tuple[int, int, int] = _WHITE) -> Image.Image:

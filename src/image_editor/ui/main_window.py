@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from PIL import Image
-from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
     LoadedImage,
+    SaveOptions,
     UnsupportedImageError,
     is_supported,
     load_image,
@@ -64,6 +65,35 @@ COMPARE_KEYS = (Qt.Key.Key_Backslash, Qt.Key.Key_yen)
 COMPARE_BADGE_TEXT = "加工前"
 
 
+# 保存の設定をアプリの環境設定に残すキー
+PREF_JPEG_QUALITY = "save/jpeg_quality"
+PREF_KEEP_EXIF = "save/keep_exif"
+PREF_KEEP_GPS = "save/keep_gps"
+PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
+
+
+def default_preferences() -> QSettings:
+    """アプリの環境設定の保存先（macOS では ~/Library/Preferences の plist）。"""
+    return QSettings()
+
+
+def load_save_options(preferences: QSettings) -> SaveOptions:
+    """環境設定から保存の設定を読む。なければ既定値。"""
+    default = SaveOptions()
+    return SaveOptions(
+        quality=int(preferences.value(PREF_JPEG_QUALITY, default.quality, type=int)),
+        keep_exif=bool(preferences.value(PREF_KEEP_EXIF, default.keep_exif, type=bool)),
+        keep_gps=bool(preferences.value(PREF_KEEP_GPS, default.keep_gps, type=bool)),
+    )
+
+
+def store_save_options(preferences: QSettings, options: SaveOptions) -> None:
+    """保存の設定を環境設定に書く（アプリを終了しても残す）。"""
+    preferences.setValue(PREF_JPEG_QUALITY, options.quality)
+    preferences.setValue(PREF_KEEP_EXIF, options.keep_exif)
+    preferences.setValue(PREF_KEEP_GPS, options.keep_gps)
+
+
 SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
 
 
@@ -98,8 +128,10 @@ class MainWindow(QMainWindow):
     save_finished = pyqtSignal(object)  # Path
     save_failed = pyqtSignal(object, str)  # Path, エラーメッセージ
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, preferences: QSettings | None = None) -> None:
+        """preferences は保存の設定を残す先（省略時は default_preferences()）。"""
         super().__init__(parent)
+        self._preferences = preferences if preferences is not None else default_preferences()
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*INITIAL_SIZE)
         self.setMinimumSize(*MINIMUM_SIZE)
@@ -141,6 +173,17 @@ class MainWindow(QMainWindow):
         self.drop_area.crop_overlay.crop_changed.connect(self.settings_panel.set_crop)
         self.settings_panel.save_requested.connect(self.save_file_dialog)
         self.settings_panel.reset_requested.connect(self.reset)
+        # 保存の設定（JPEG 品質・EXIF）は画像ごとに戻さず、アプリを終了しても残す
+        self.settings_panel.set_save_options(load_save_options(self._preferences))
+        self.settings_panel.save_options_changed.connect(
+            lambda options: store_save_options(self._preferences, options)
+        )
+        self.settings_panel.set_save_options_expanded(
+            bool(self._preferences.value(PREF_SAVE_OPTIONS_EXPANDED, False, type=bool))
+        )
+        self.settings_panel.save_options_expanded_changed.connect(
+            lambda expanded: self._preferences.setValue(PREF_SAVE_OPTIONS_EXPANDED, expanded)
+        )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
         # どのウィジェットにフォーカスがあっても \ キーで比べられるよう、アプリ全体のキーを見る
         app = QApplication.instance()
@@ -388,7 +431,13 @@ class MainWindow(QMainWindow):
             self._show_error("保存できません", SAME_FILE_MESSAGE)
             return False
         self._saving_settings = self.settings_panel.settings()
-        task = SaveTask(self.loaded.image, self._saving_settings, path)
+        task = SaveTask(
+            self.loaded.image,
+            self._saving_settings,
+            path,
+            options=self.settings_panel.save_options(),
+            exif=self.loaded.exif,
+        )
         # 完了通知を受け取るまで Python 側で保持する
         task.setAutoDelete(False)
         task.signals.finished.connect(self._on_save_finished)
