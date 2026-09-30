@@ -6,7 +6,7 @@ from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import CORNER_RADIUS_DEFAULT, ShapeType
 from image_editor.core.transform import AspectRatio, CropRect, Orientation, OrientOp
-from image_editor.ui.settings_panel import SettingsPanel
+from image_editor.ui.settings_panel import PanelState, SettingsPanel
 
 
 @pytest.fixture
@@ -1042,6 +1042,23 @@ def test_rotation_toggles_portrait_for_locked_ratio(panel):
     assert panel.crop_aspect() == ((3, 4), False)
 
 
+@pytest.mark.parametrize(
+    "ops",
+    [
+        [OrientOp.ROTATE_RIGHT, OrientOp.ROTATE_RIGHT],
+        [OrientOp.ROTATE_RIGHT, OrientOp.FLIP_HORIZONTAL],
+        [OrientOp.ROTATE_LEFT, OrientOp.FLIP_VERTICAL, OrientOp.ROTATE_LEFT],
+        [OrientOp.FLIP_HORIZONTAL, OrientOp.ROTATE_RIGHT, OrientOp.ROTATE_RIGHT],
+    ],
+)
+def test_image_size_follows_orientation_after_several_ops(panel, ops):
+    # 何回操作しても、範囲の座標系の大きさ = 向きから計算した大きさ
+    for op in ops:
+        panel.apply_orientation(op)
+        assert panel.image_size() == panel.orientation().size((400, 300))
+    assert panel.crop_width_spin.maximum() == panel.image_size()[0]
+
+
 def test_orientation_is_reset_on_new_image(panel):
     panel.rotate_right_button.click()
     panel.flip_horizontal_button.click()
@@ -1065,3 +1082,98 @@ def test_orient_buttons_disabled_without_image(qtbot):
     assert not any(b.isEnabled() for b in widget._orient_buttons())
     widget.apply_orientation(OrientOp.ROTATE_RIGHT)
     assert widget.orientation() == Orientation()
+
+
+# --- アンドゥ／リドゥ用の状態 -------------------------------------------------
+
+
+def change_many(panel: SettingsPanel) -> None:
+    panel.rotate_right_button.click()
+    panel.flip_horizontal_button.click()
+    select_aspect(panel, AspectRatio.RATIO_3_2)
+    panel.portrait_check.setChecked(True)
+    panel.set_crop(CropRect(10, 20, 100, 150))
+    panel.keep_aspect_check.setChecked(False)
+    panel.width_spin.setValue(80)
+    panel.filter_combo.setCurrentIndex(panel.filter_combo.findData(FilterType.NOIR))
+    select_shape(panel, ShapeType.ROUNDED)
+    panel.corner_slider.setValue(33)
+    panel.exposure_slider.setValue(-13)
+    panel.brightness_slider.setValue(12)
+    panel.contrast_slider.setValue(-34)
+    panel.temperature_slider.setValue(45)
+    panel.saturation_slider.setValue(56)
+    panel.vignette_slider.setValue(67)
+    panel.aging_slider.setValue(78)
+
+
+def test_snapshot_restore_round_trip(panel, qtbot):
+    change_many(panel)
+    changed = panel.snapshot()
+    panel.set_image_size((400, 300))  # すべて初期状態に戻す
+    assert panel.snapshot() != changed
+
+    received = []
+    panel.settings_changed.connect(received.append)
+    panel.restore(changed)
+
+    assert panel.snapshot() == changed
+    assert len(received) == 1  # 変更の通知は 1 回
+    assert panel.image_size() == (300, 400)
+    assert panel.exposure_value_label.text() == "-1.3 EV"
+    assert panel.temperature_value_label.text() == "4500 K"
+    assert panel.corner_slider.isEnabled()
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (80, 150)
+
+
+def test_restore_back_to_initial(panel):
+    initial = panel.snapshot()
+    change_many(panel)
+
+    panel.restore(initial)
+
+    assert panel.snapshot() == initial
+    assert panel.settings() == EditSettings()
+    assert panel.image_size() == (400, 300)
+    assert (panel.width_spin.value(), panel.height_spin.value()) == (400, 300)
+    assert not panel.corner_slider.isEnabled()
+
+
+def test_snapshot_keeps_aspect_while_locked_by_frame(panel):
+    select_aspect(panel, AspectRatio.RATIO_16_9)
+    select_frame(panel, FrameType.POLAROID)
+
+    state = panel.snapshot()
+
+    assert state.aspect is AspectRatio.RATIO_16_9  # 固定を解いたときに戻る比
+    panel.set_image_size((400, 300))
+    panel.restore(state)
+    assert panel.aspect_combo.currentText() == "フレーム・円に合わせる"
+    select_frame(panel, FrameType.NONE)
+    assert panel.aspect_combo.currentText() == "16:9"
+
+
+def test_restore_does_not_refit_crop(panel):
+    # 比が 1:1 の状態でも、取ったときの範囲をそのまま戻す
+    state = PanelState(EditSettings(crop=CropRect(0, 0, 300, 100)), AspectRatio.FREE)
+    select_aspect(panel, AspectRatio.SQUARE)
+
+    panel.restore(state)
+
+    assert panel.settings().crop == CropRect(0, 0, 300, 100)
+    assert panel.aspect_combo.currentText() == "自由"
+
+
+def test_restore_without_image_does_nothing(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    widget.restore(PanelState(EditSettings(brightness=50)))
+    assert widget.settings() == EditSettings()
+
+
+def test_is_adjusting(panel):
+    assert not panel.is_adjusting()
+    panel.saturation_slider.setSliderDown(True)
+    assert panel.is_adjusting()
+    panel.saturation_slider.setSliderDown(False)
+    assert not panel.is_adjusting()

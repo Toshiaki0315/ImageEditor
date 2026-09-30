@@ -1,5 +1,6 @@
 """設定パネル（サイズ変更・加工・トリミング・各ボタン）。"""
 
+from dataclasses import dataclass
 from typing import Literal
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -69,6 +70,19 @@ FOLLOW_FRAME_TEXT = "フレーム・円に合わせる"
 FOLLOW_FRAME_DATA = "follow_frame"
 # 「加工」のスライダーの最小の長さ（細かく調整しやすいよう長めにする）
 SLIDER_MIN_WIDTH = 225
+
+
+@dataclass(frozen=True)
+class PanelState:
+    """アンドゥ／リドゥで戻す、設定パネルの状態。
+
+    保存に使う設定 (EditSettings) に加えて、範囲の指定を助ける比の選択も持つ
+    （戻したトリミング範囲と比の固定が食い違わないように）。
+    """
+
+    settings: EditSettings
+    aspect: AspectRatio = AspectRatio.FREE
+    portrait: bool = False
 
 
 class SettingsPanel(QWidget):
@@ -383,6 +397,74 @@ class SettingsPanel(QWidget):
         """トリミングを解除する。"""
         self.set_crop(None)
 
+    def aspect_preset(self) -> AspectRatio:
+        """比のプルダウンで選んでいる比（フレーム・円で固定中なら、固定を解いたときに戻る比）。"""
+        data = self.aspect_combo.currentData()
+        if isinstance(data, AspectRatio):
+            return data
+        return self.aspect_combo.itemData(self._aspect_index)
+
+    def snapshot(self) -> PanelState:
+        """アンドゥ／リドゥ用に今の状態を返す。"""
+        return PanelState(
+            settings=self.settings(),
+            aspect=self.aspect_preset(),
+            portrait=self.portrait_check.isChecked(),
+        )
+
+    def restore(self, state: PanelState) -> None:
+        """snapshot() で取った状態に戻す（画像は変えない）。変更は 1 回だけ通知する。
+
+        比の固定で範囲を直したりせず、取ったときの値をそのまま戻す。
+        """
+        if self._image_size is None:
+            return
+        settings = state.settings
+        # 回転・反転前の大きさ（向きによる幅と高さの入れ替えは、もう一度かけると元に戻る）
+        source_size = self._orientation.size(self._image_size)
+        self._orientation = settings.orientation
+        self._image_size = settings.orientation.size(source_size)
+        crop = settings.crop or CropRect(0, 0, 0, 0)
+        with self._block():
+            self._set_crop_limits(self._image_size)
+            self._set_crop_spins(crop)
+            self._committed_crop = self._clamped_range()
+            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
+            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
+            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
+            self.corner_slider.setValue(settings.corner_radius)
+            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
+            self.brightness_slider.setValue(settings.brightness)
+            self.contrast_slider.setValue(settings.contrast)
+            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
+            self.saturation_slider.setValue(settings.saturation)
+            self.vignette_slider.setValue(settings.vignette)
+            self.aging_slider.setValue(settings.aging)
+            self._aspect_index = self.aspect_combo.findData(state.aspect)
+            self.aspect_combo.setCurrentIndex(self._aspect_index)
+            self.portrait_check.setChecked(state.portrait)
+            self.keep_aspect_check.setChecked(settings.keep_aspect)
+            # 幅・高さは、指定がなければトリミング後のサイズ、あれば指定から計算した値
+            base = self.base_size()
+            if settings.width is None and settings.height is None:
+                self._size_edited = False
+                self._last_edited = "width"
+                self._set_size_spins(base)
+            else:
+                self._size_edited = True
+                self._last_edited = "width" if settings.width is not None else "height"
+                self._set_size_spins(
+                    fit_size(base, settings.width, settings.height, settings.keep_aspect)
+                )
+        self._update_corner_enabled()
+        self._update_aspect_controls()
+        self._emit_changed()
+
+    def is_adjusting(self) -> bool:
+        """スライダーをドラッグ中かを返す（ドラッグ中の変更は 1 回の操作としてまとめる）。"""
+        sliders = (self.corner_slider, *self._adjustment_sliders())
+        return any(slider.isSliderDown() for slider in sliders)
+
     def is_trim_view(self) -> bool:
         """切り抜き後の表示（「トリミング実行」が押された状態）かを返す。"""
         return self.trim_button.isChecked()
@@ -412,7 +494,8 @@ class SettingsPanel(QWidget):
         old_size = self._image_size
         rect = self._clamped_range()
         self._orientation = self._orientation.apply(op)
-        self._image_size = self._orientation.size(old_size)
+        # 今の向きに対する操作なので、90° 回したときだけ幅と高さが入れ替わる
+        self._image_size = (old_size[1], old_size[0]) if op.swaps_sides else old_size
         with self._block():
             self._set_crop_limits(self._image_size)
             if rect is not None:
