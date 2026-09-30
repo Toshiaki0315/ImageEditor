@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtGui import QMouseEvent, QPainter, QPaintEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QToolButton,
@@ -247,10 +248,6 @@ class SettingsPanel(QWidget):
         self.keep_exif_check.setToolTip("撮影日時・カメラなど。JPEG・PNG・TIFF で保存するとき")
         self.keep_exif_check.setChecked(True)
         self.keep_gps_check = QCheckBox("位置情報 (GPS) も残す")
-        exif_row = QHBoxLayout()
-        exif_row.addWidget(self.keep_exif_check)
-        exif_row.addWidget(self.keep_gps_check)
-        exif_row.addStretch(1)
         # 縦に場所を取らないよう、見出しのクリックで開閉できるようにする（既定は閉じる）
         self.save_options_toggle = QToolButton()
         self.save_options_toggle.setText("保存の設定")
@@ -261,12 +258,14 @@ class SettingsPanel(QWidget):
         line_height = self.save_options_toggle.fontMetrics().height()
         self.save_options_toggle.setFixedHeight(line_height + 6)
         self.save_options_toggle.setIconSize(QSize(line_height // 2, line_height // 2))
-        self.save_options_summary = QLabel()
+        self.save_options_summary = ElidedLabel()
         self.save_options_body = QWidget()
         save_form = QFormLayout(self.save_options_body)
         save_form.setContentsMargins(0, 0, 0, 0)
         save_form.addRow("JPEG 品質", quality_row)
-        save_form.addRow(exif_row)
+        # 横に並べるとフォントによってはパネルの幅を超えるので、縦に並べる
+        save_form.addRow(self.keep_exif_check)
+        save_form.addRow(self.keep_gps_check)
         save_header = QHBoxLayout()
         save_header.addWidget(self.save_options_toggle)
         save_header.addWidget(self.save_options_summary)
@@ -802,7 +801,9 @@ class SettingsPanel(QWidget):
         )
         self.save_options_body.setVisible(expanded)
         self.save_options_summary.setVisible(not expanded)
-        self.save_options_summary.setText(_save_options_text(self.save_options()))
+        summary = _save_options_text(self.save_options())
+        self.save_options_summary.setText(summary)
+        self.save_options_summary.setToolTip(summary)
 
     def _on_save_options_changed(self) -> None:
         self._update_save_options_view()
@@ -971,6 +972,27 @@ def _percent_text(value: int) -> str:
 
 def _kelvin_text(kelvin: int) -> str:
     return f"{kelvin} K"
+
+
+class ElidedLabel(QLabel):
+    """幅が足りないときは末尾を「…」で省略して 1 行で表示するラベル。
+
+    文字の長さでパネルの最小幅が広がらないよう、最小幅を持たない。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        painter = QPainter(self)
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        painter.drawText(rect, int(self.alignment()), text)
+        painter.end()
 
 
 class ResettableSlider(QSlider):
