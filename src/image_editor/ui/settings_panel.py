@@ -37,7 +37,7 @@ from image_editor.core.effects import (
     VIGNETTE_MIN,
 )
 from image_editor.core.filters import FilterType
-from image_editor.core.frames import FrameType
+from image_editor.core.frames import FrameType, window_aspect
 from image_editor.core.pipeline import EditSettings, effective_crop
 from image_editor.core.shapes import (
     CORNER_RADIUS_DEFAULT,
@@ -45,12 +45,24 @@ from image_editor.core.shapes import (
     CORNER_RADIUS_MIN,
     ShapeType,
 )
-from image_editor.core.transform import MAX_SIZE, MIN_SIZE, CropRect, fit_size
+from image_editor.core.transform import (
+    MAX_SIZE,
+    MIN_SIZE,
+    AspectRatio,
+    CropRect,
+    clamp_crop,
+    constrain_rect,
+    fit_aspect,
+    fit_size,
+)
 
 # 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
 BLANK_TEXT = " "
 TRIM_TEXT = "トリミング実行"
 EDIT_RANGE_TEXT = "範囲を編集"
+# フレーム・円を選んでいるとき、比のプルダウンに表示する項目（ユーザーは選べない）
+FOLLOW_FRAME_TEXT = "フレーム・円に合わせる"
+FOLLOW_FRAME_DATA = "follow_frame"
 # 「加工」のスライダーの最小の長さ（細かく調整しやすいよう長めにする）
 SLIDER_MIN_WIDTH = 225
 
@@ -75,6 +87,8 @@ class SettingsPanel(QWidget):
         # 縦横比保持時に基準にする側（最後に編集した側）
         self._last_edited: Literal["width", "height"] = "width"
         self._updating = False
+        # 最後に確定したトリミング範囲（数値入力で比の向きを決めるのに使う）
+        self._committed_crop: CropRect | None = None
 
         # サイズ変更
         self.width_spin = _spin_box(MIN_SIZE, MAX_SIZE, " px")
@@ -159,8 +173,21 @@ class SettingsPanel(QWidget):
         # 押すと切り抜き後の表示に切り替わり、「範囲を編集」になる（範囲は設定として保持）
         self.trim_button = QPushButton(TRIM_TEXT)
         self.trim_button.setCheckable(True)
+        # 縦横比。フレーム・円を選んでいるときはその比に固定する
+        self.aspect_combo = QComboBox()
+        for aspect_ratio in AspectRatio:
+            self.aspect_combo.addItem(aspect_ratio.label, aspect_ratio)
+        self.aspect_combo.addItem(FOLLOW_FRAME_TEXT, FOLLOW_FRAME_DATA)
+        follow_item = self.aspect_combo.model().item(self.aspect_combo.count() - 1)
+        follow_item.setEnabled(False)
+        self._aspect_index = 0  # 固定を解いたときに戻す選択
+        self.portrait_check = QCheckBox("縦向き")
+        aspect_row = QHBoxLayout()
+        aspect_row.addWidget(self.aspect_combo, 1)
+        aspect_row.addWidget(self.portrait_check)
         crop_box = QGroupBox("トリミング")
         crop_form = QFormLayout(crop_box)
+        crop_form.addRow("比", aspect_row)
         crop_form.addRow("X", self.crop_x_spin)
         crop_form.addRow("Y", self.crop_y_spin)
         crop_form.addRow("幅", self.crop_width_spin)
@@ -189,12 +216,14 @@ class SettingsPanel(QWidget):
         self.keep_aspect_check.toggled.connect(self._on_keep_aspect_toggled)
         self.filter_combo.currentIndexChanged.connect(lambda _: self._emit_changed())
         # フレームを変えると写真部分の比率への切り抜きが変わるので、トリミングと同じく扱う
-        self.frame_combo.currentIndexChanged.connect(lambda _: self._on_crop_edited())
+        self.frame_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
         # 円は正方形に切り抜くので、形もトリミングと同じく扱う
         self.shape_combo.currentIndexChanged.connect(lambda _: self._on_shape_changed())
         self.corner_slider.valueChanged.connect(self._on_corner_changed)
-        for spin in self._crop_spins():
-            spin.valueChanged.connect(lambda _: self._on_crop_edited())
+        for name, spin in zip(("x", "y", "width", "height"), self._crop_spins(), strict=True):
+            spin.valueChanged.connect(lambda _, name=name: self._on_crop_spin_edited(name))
+        self.aspect_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
+        self.portrait_check.toggled.connect(lambda _: self._on_aspect_source_changed())
         self.clear_crop_button.clicked.connect(self.clear_crop)
         self.trim_button.toggled.connect(self._on_trim_toggled)
         self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
@@ -214,6 +243,7 @@ class SettingsPanel(QWidget):
     def set_image_size(self, size: tuple[int, int] | None) -> None:
         """画像のサイズを設定し、すべての設定を初期状態に戻す。None で未読込状態にする。"""
         self._image_size = size
+        self._committed_crop = None
         self._size_edited = False
         self._last_edited = "width"
         with self._block():
@@ -228,6 +258,9 @@ class SettingsPanel(QWidget):
             self.keep_aspect_check.setChecked(True)
             self.filter_combo.setCurrentIndex(0)
             self.frame_combo.setCurrentIndex(0)
+            self._aspect_index = 0
+            self.aspect_combo.setCurrentIndex(0)
+            self.portrait_check.setChecked(False)
             self.shape_combo.setCurrentIndex(0)
             self.corner_slider.setValue(CORNER_RADIUS_DEFAULT)
             self.vignette_slider.setValue(0)
@@ -244,6 +277,7 @@ class SettingsPanel(QWidget):
                 self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
         self._update_corner_enabled()
+        self._update_aspect_controls()
         self._update_trim_button()
         self._emit_changed()
 
@@ -300,8 +334,30 @@ class SettingsPanel(QWidget):
         """選ばれている形を返す。"""
         return self.shape_combo.currentData()
 
+    def crop_aspect(self) -> tuple[tuple[float, float] | None, bool]:
+        """トリミング範囲に保たせる縦横比 (幅, 高さ) と、向きを自由にするかを返す。
+
+        フレームがあれば写真部分の比（チェキは範囲の形に合わせて縦横どちらにもなる）、
+        フレームなしの円は 1:1、それ以外は比のプルダウンの選択（自由なら None）。
+        """
+        size = self._range_size()
+        aspect = self._aspect_for(size)
+        free = self.frame() is not FrameType.NONE and aspect is not None and aspect[0] != aspect[1]
+        return aspect, free
+
+    def is_aspect_locked_by_frame(self) -> bool:
+        """フレーム・円に合わせて比を固定しているかを返す。"""
+        return self.frame() is not FrameType.NONE or self.shape() is ShapeType.CIRCLE
+
     def set_crop(self, rect: CropRect | None) -> None:
-        """トリミング範囲を設定する（原画像の座標系）。None で解除。"""
+        """トリミング範囲を設定する（原画像の座標系）。None で解除。
+
+        比を指定しているときは、範囲をその比に直してから設定する。
+        """
+        if rect is not None and self._image_size is not None:
+            aspect = self._aspect_for((rect.width, rect.height))
+            if aspect is not None and rect.width > 0 and rect.height > 0:
+                rect = constrain_rect(rect, aspect, self._image_size)
         rect = rect or CropRect(0, 0, 0, 0)
         with self._block():
             self.crop_x_spin.setValue(rect.x)
@@ -386,7 +442,106 @@ class SettingsPanel(QWidget):
 
     def _on_shape_changed(self) -> None:
         self._update_corner_enabled()
+        self._on_aspect_source_changed()
+
+    def _on_aspect_source_changed(self) -> None:
+        """比・縦向き・フレーム・形が変わったら、比の表示を更新し、範囲をその比に直す。"""
+        if self._updating:
+            return
+        self._update_aspect_controls()
+        self._fit_range_to_aspect()
         self._on_crop_edited()
+
+    def _update_aspect_controls(self) -> None:
+        """フレーム・円を選んでいるときは比をそれに固定して操作できなくする。"""
+        locked = self.is_aspect_locked_by_frame()
+        follow_index = self.aspect_combo.count() - 1
+        with self._block():
+            if locked:
+                if self.aspect_combo.currentIndex() != follow_index:
+                    self._aspect_index = self.aspect_combo.currentIndex()
+                self.aspect_combo.setCurrentIndex(follow_index)
+            elif self.aspect_combo.currentIndex() == follow_index:
+                self.aspect_combo.setCurrentIndex(self._aspect_index)
+        enabled = self._image_size is not None and not locked
+        self.aspect_combo.setEnabled(enabled)
+        preset = self.aspect_combo.currentData()
+        # 自由と 1:1 には向きがない
+        has_orientation = isinstance(preset, AspectRatio) and preset not in (
+            AspectRatio.FREE,
+            AspectRatio.SQUARE,
+        )
+        self.portrait_check.setEnabled(enabled and has_orientation)
+
+    def _aspect_for(self, size: tuple[int, int]) -> tuple[float, float] | None:
+        """size の範囲に保たせる縦横比を返す（自由なら None）。"""
+        frame = self.frame()
+        if frame is not FrameType.NONE:
+            return window_aspect(frame, size)
+        if self.shape() is ShapeType.CIRCLE:
+            return (1, 1)
+        preset = self.aspect_combo.currentData()
+        if not isinstance(preset, AspectRatio):
+            return None
+        return preset.ratio(portrait=self.portrait_check.isChecked())
+
+    def _range_size(self) -> tuple[int, int]:
+        """今の範囲（画像内に収めたもの）の大きさ。範囲がなければ画像の大きさ。"""
+        rect = self._clamped_range()
+        if rect is not None:
+            return (rect.width, rect.height)
+        return self._image_size or (MIN_SIZE, MIN_SIZE)
+
+    def _clamped_range(self) -> CropRect | None:
+        rect = self._crop_rect()
+        if rect is None or self._image_size is None:
+            return None
+        return clamp_crop(rect, self._image_size)
+
+    def _fit_range_to_aspect(self) -> None:
+        """範囲があれば、その中央を今の比に合わせた範囲に直す。"""
+        rect = self._clamped_range()
+        if rect is None:
+            return
+        aspect = self._aspect_for((rect.width, rect.height))
+        if aspect is None:
+            return
+        self._set_crop_spins(fit_aspect(rect, aspect))
+
+    def _on_crop_spin_edited(self, name: str) -> None:
+        """数値欄の変更。比を指定しているときは、もう一方の辺や位置を直して比を保つ。"""
+        if self._updating:
+            return
+        rect = self._crop_rect()
+        size = self._image_size
+        previous = self._committed_crop
+        aspect = self._aspect_for(
+            (previous.width, previous.height) if previous else self._range_size()
+        )
+        width, height = self.crop_width_spin.value(), self.crop_height_spin.value()
+        if aspect is not None and size is not None:
+            x, y = self.crop_x_spin.value(), self.crop_y_spin.value()
+            aspect_width, aspect_height = aspect
+            if name == "width" and width > 0:
+                height = max(MIN_SIZE, round(width * aspect_height / aspect_width))
+            elif name == "height" and height > 0:
+                width = max(MIN_SIZE, round(height * aspect_width / aspect_height))
+            elif rect is not None:
+                # 位置を変えたときは大きさを保ち、画像からはみ出す分だけ戻す
+                x = min(x, max(size[0] - width, 0))
+                y = min(y, max(size[1] - height, 0))
+            if width > 0 and height > 0:
+                fitted = constrain_rect(CropRect(x, y, width, height), aspect, size)
+                if fitted is not None:
+                    self._set_crop_spins(fitted)
+        self._on_crop_edited()
+
+    def _set_crop_spins(self, rect: CropRect) -> None:
+        with self._block():
+            self.crop_x_spin.setValue(rect.x)
+            self.crop_y_spin.setValue(rect.y)
+            self.crop_width_spin.setValue(rect.width)
+            self.crop_height_spin.setValue(rect.height)
 
     def _on_corner_changed(self, value: int) -> None:
         self.corner_value_label.setText(_percent_text(value))
@@ -419,6 +574,7 @@ class SettingsPanel(QWidget):
     def _on_crop_edited(self) -> None:
         if self._updating:
             return
+        self._committed_crop = self._clamped_range()
         base = self.base_size()
         if not self._size_edited:
             with self._block():

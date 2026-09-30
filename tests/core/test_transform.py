@@ -4,7 +4,18 @@ import sys
 import pytest
 from PIL import Image
 
-from image_editor.core.transform import CropRect, clamp_crop, crop, fit_aspect, fit_size, resize
+from image_editor.core.transform import (
+    AspectRatio,
+    CropRect,
+    aspect_drag_rect,
+    clamp_crop,
+    constrain_rect,
+    crop,
+    fit_aspect,
+    fit_size,
+    oriented,
+    resize,
+)
 
 # --- clamp_crop ---------------------------------------------------------------
 
@@ -203,3 +214,90 @@ def test_core_transform_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+# --- 縦横比 -------------------------------------------------------------------
+
+
+def test_aspect_ratio_labels():
+    assert [a.label for a in AspectRatio] == ["自由", "1:1", "4:3", "3:2", "16:9"]
+
+
+def test_aspect_ratio_orientation():
+    assert AspectRatio.FREE.ratio() is None
+    assert AspectRatio.FREE.ratio(portrait=True) is None
+    assert AspectRatio.RATIO_4_3.ratio() == (4, 3)
+    assert AspectRatio.RATIO_4_3.ratio(portrait=True) == (3, 4)
+    assert AspectRatio.RATIO_16_9.ratio(portrait=True) == (9, 16)
+    assert AspectRatio.SQUARE.ratio(portrait=True) == (1, 1)
+
+
+def test_oriented():
+    assert oriented((46, 62), landscape=True) == (62, 46)
+    assert oriented((46, 62), landscape=False) == (46, 62)
+    assert oriented((16, 9), landscape=False) == (9, 16)
+
+
+def keeps_ratio(rect: CropRect, aspect: tuple[float, float]) -> bool:
+    """整数に丸めた範囲が、ほぼ（±1px）指定の比になっているか。"""
+    aspect_width, aspect_height = aspect
+    return (
+        abs(rect.height - rect.width * aspect_height / aspect_width) <= 1
+        or abs(rect.width - rect.height * aspect_width / aspect_height) <= 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("rect", "aspect", "expected"),
+    [
+        # 画像内で比が違う → 左上を固定して長い方を縮める
+        (CropRect(10, 20, 400, 100), (1, 1), CropRect(10, 20, 100, 100)),
+        (CropRect(10, 20, 160, 400), (16, 9), CropRect(10, 20, 160, 90)),
+        # 画像の外にはみ出す → 画像内に収めてから比に合わせる
+        (CropRect(900, 0, 400, 300), (4, 3), CropRect(900, 0, 100, 75)),
+        # すでに比どおりならそのまま
+        (CropRect(0, 0, 400, 300), (4, 3), CropRect(0, 0, 400, 300)),
+    ],
+)
+def test_constrain_rect(rect, aspect, expected):
+    assert constrain_rect(rect, aspect, (1000, 500)) == expected
+
+
+def test_constrain_rect_outside_image():
+    assert constrain_rect(CropRect(2000, 0, 10, 10), (1, 1), (1000, 500)) is None
+
+
+@pytest.mark.parametrize(
+    ("point", "expected"),
+    [
+        # マウスまで届く大きさ（比に対して長い方の辺に合わせる）
+        ((600, 400), CropRect(200, 100, 400, 300)),  # 400x300 はちょうど 4:3
+        ((600, 200), CropRect(200, 100, 400, 300)),  # 横に長い → 幅 400 に合わせる
+        ((300, 400), CropRect(200, 100, 400, 300)),  # 縦に長い → 高さ 300 に合わせる
+        # 左上方向
+        ((0, 0), CropRect(67, 0, 133, 100)),  # 高さが画像の端 (100) で止まる
+    ],
+)
+def test_aspect_drag_rect(point, expected):
+    result = aspect_drag_rect((200, 100), point, (4, 3), (1000, 500))
+    assert result == expected
+    assert keeps_ratio(result, (4, 3))
+
+
+@pytest.mark.parametrize("point", [(1000, 500), (5000, 5000), (0, 500), (1000, 0), (0, 0)])
+@pytest.mark.parametrize("aspect", [(1, 1), (4, 3), (3, 4), (16, 9), (46, 62)])
+def test_aspect_drag_rect_stays_in_image(point, aspect):
+    # 画像の端でも範囲が画像内に収まり、比が保たれる
+    image_size = (1000, 500)
+    result = aspect_drag_rect((700, 300), point, aspect, image_size)
+
+    assert result.x >= 0 and result.y >= 0
+    assert result.x + result.width <= 1000
+    assert result.y + result.height <= 500
+    assert result.width > 0 and result.height > 0
+    assert keeps_ratio(result, aspect)
+
+
+def test_aspect_drag_rect_click_is_empty():
+    result = aspect_drag_rect((100, 100), (100, 100), (4, 3), (1000, 500))
+    assert (result.width, result.height) == (0, 0)

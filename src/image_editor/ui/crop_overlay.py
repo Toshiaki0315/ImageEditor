@@ -8,7 +8,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PyQt6.QtWidgets import QWidget
 
-from image_editor.core.transform import CropRect, clamp_crop
+from image_editor.core.transform import CropRect, aspect_drag_rect, clamp_crop, oriented
 
 MASK_COLOR = QColor(0, 0, 0, 120)
 HANDLE_SIZE = 8  # ハンドルの描画サイズ（論理ピクセル）
@@ -81,6 +81,7 @@ class CropOverlay(QWidget):
     """プレビューの上に重ねて、ドラッグでトリミング範囲を選択するウィジェット。
 
     範囲外のドラッグで新規選択、範囲内のドラッグで移動、四隅のハンドルでサイズ変更する。
+    縦横比が指定されていれば、新規選択とサイズ変更で比を保つ。
     範囲は原画像の座標系で扱い、変更のたびに crop_changed(CropRect | None) を発行する。
     """
 
@@ -92,6 +93,8 @@ class CropOverlay(QWidget):
         self._image_size: tuple[int, int] | None = None
         self._crop: CropRect | None = None
         self._drag: _Drag | None = None
+        self._aspect: tuple[float, float] | None = None
+        self._free_orientation = False
         self.setMouseTracking(True)
         self.set_active(False)
 
@@ -120,6 +123,21 @@ class CropOverlay(QWidget):
         self._crop = rect
         self.update()
 
+    def set_aspect(
+        self, aspect: tuple[float, float] | None, free_orientation: bool = False
+    ) -> None:
+        """ドラッグで保つ縦横比 (幅, 高さ) を設定する。None なら自由。
+
+        free_orientation なら向き（横長・縦長）はドラッグの形に合わせる（新規選択は
+        ドラッグした方向、サイズ変更は元の範囲の向き）。
+        """
+        self._aspect = aspect
+        self._free_orientation = free_orientation
+
+    def aspect(self) -> tuple[float, float] | None:
+        """ドラッグで保つ縦横比を返す。"""
+        return self._aspect
+
     def crop(self) -> CropRect | None:
         """現在の範囲を返す。"""
         return self._crop
@@ -138,7 +156,9 @@ class CropOverlay(QWidget):
             return
         corner = self._hit_corner(event.position())
         if corner is not None and self._crop is not None:
-            self._drag = _Drag(_DragMode.RESIZE, anchor=self._opposite_corner(corner))
+            self._drag = _Drag(
+                _DragMode.RESIZE, anchor=self._opposite_corner(corner), start_rect=self._crop
+            )
         elif self._crop is not None and self._widget_crop_rect().contains(event.position()):
             self._drag = _Drag(_DragMode.MOVE, anchor=point, start_rect=self._crop)
         elif self._image_rect().contains(event.position()):
@@ -159,6 +179,9 @@ class CropOverlay(QWidget):
             assert self._drag.start_rect is not None
             dx, dy = point[0] - self._drag.anchor[0], point[1] - self._drag.anchor[1]
             rect: CropRect | None = move_rect(self._drag.start_rect, dx, dy, self._image_size)
+        elif self._aspect is not None:
+            aspect = self._drag_aspect(self._aspect, point)
+            rect = aspect_drag_rect(self._drag.anchor, point, aspect, self._image_size)
         else:
             rect = rect_from_points(self._drag.anchor, point)
         self._set_crop_and_emit(rect)
@@ -216,6 +239,20 @@ class CropOverlay(QWidget):
         if self._image_size is None or image_rect.isEmpty():
             return None
         return widget_to_image(point, image_rect, self._image_size)
+
+    def _drag_aspect(
+        self, aspect: tuple[float, float], point: tuple[int, int]
+    ) -> tuple[float, float]:
+        """ドラッグ中に保つ縦横比を返す（向きを自由にするときは向きを決める）。"""
+        if not self._free_orientation or self._drag is None:
+            return aspect
+        start = self._drag.start_rect
+        if self._drag.mode is _DragMode.RESIZE and start is not None:
+            landscape = start.width >= start.height
+        else:
+            anchor_x, anchor_y = self._drag.anchor
+            landscape = abs(point[0] - anchor_x) >= abs(point[1] - anchor_y)
+        return oriented(aspect, landscape)
 
     def _widget_crop_rect(self) -> QRectF:
         if self._crop is None or self._image_size is None:

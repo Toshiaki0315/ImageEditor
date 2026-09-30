@@ -11,7 +11,7 @@ from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import load_image
 from image_editor.core.shapes import ShapeType
-from image_editor.core.transform import CropRect
+from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
 
@@ -278,7 +278,10 @@ def test_preview_keeps_whole_frame(loaded_window, filter_type, frame):
 
     source = loaded_window.drop_area._source
     assert (source.width(), source.height()) == (400, 300)
-    assert loaded_window.drop_area.crop_overlay.crop() == CropRect(0, 0, 100, 50)
+    # マスクは範囲を示す（フレームを選ぶと範囲は写真部分の比に直る）
+    assert loaded_window.drop_area.crop_overlay.crop() == panel.settings().crop
+    if frame is FrameType.NONE:
+        assert panel.settings().crop == CropRect(0, 0, 100, 50)
 
 
 def test_status_shows_output_size(loaded_window):
@@ -1216,3 +1219,50 @@ def test_save_circle_with_frame(loaded_window, qtbot, tmp_path):
     # 写真部分 (17, 23) から 300x300。その左上の角はフレームの白
     assert saved.getpixel((19, 25)) == (255, 255, 255)
     assert saved.getpixel((17 + 150, 23 + 150)) != (255, 255, 255)
+
+
+# --- トリミングの縦横比 ---------------------------------------------------------
+
+
+def test_aspect_is_passed_to_overlay(loaded_window):
+    panel = loaded_window.settings_panel
+    overlay = loaded_window.drop_area.crop_overlay
+    assert overlay.aspect() is None
+
+    panel.aspect_combo.setCurrentIndex(panel.aspect_combo.findData(AspectRatio.RATIO_3_2))
+    assert overlay.aspect() == (3, 2)
+
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    assert overlay.aspect() == (79, 79)
+
+
+def test_drag_with_aspect_updates_panel(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.aspect_combo.setCurrentIndex(panel.aspect_combo.findData(AspectRatio.SQUARE))
+    overlay = loaded_window.drop_area.crop_overlay
+    image_rect = loaded_window.drop_area.image_rect()
+
+    def to_widget(x, y):
+        point = image_to_widget(x, y, image_rect, (400, 300))
+        return QPoint(round(point.x()), round(point.y()))
+
+    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=to_widget(50, 50))
+    qtbot.mouseMove(overlay, to_widget(200, 100))
+    qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=to_widget(200, 100))
+
+    crop = panel.settings().crop
+    assert crop is not None
+    assert abs(crop.width - crop.height) <= 1
+    assert overlay.crop() == crop
+
+
+def test_frame_mask_matches_saved_crop(loaded_window, qtbot, tmp_path):
+    # フレームを選ぶとマスクの範囲 = 実際に切り抜かれる範囲
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 300, 100))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+
+    overlay_crop = loaded_window.drop_area.crop_overlay.crop()
+
+    assert overlay_crop == CropRect(100, 0, 100, 100)
+    assert panel.base_size() == (100, 100)

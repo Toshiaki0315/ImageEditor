@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from PIL import Image
 
@@ -18,6 +19,36 @@ class CropRect:
     y: int
     width: int
     height: int
+
+
+class AspectRatio(Enum):
+    """トリミングの縦横比の選択肢。値は横向きのときの (幅, 高さ)。"""
+
+    FREE = None
+    SQUARE = (1, 1)
+    RATIO_4_3 = (4, 3)
+    RATIO_3_2 = (3, 2)
+    RATIO_16_9 = (16, 9)
+
+    @property
+    def label(self) -> str:
+        """UI に表示する名前。"""
+        if self.value is None:
+            return "自由"
+        return f"{self.value[0]}:{self.value[1]}"
+
+    def ratio(self, portrait: bool = False) -> tuple[int, int] | None:
+        """縦横比 (幅, 高さ) を返す。portrait なら縦向きにする。自由なら None。"""
+        if self.value is None:
+            return None
+        width, height = self.value
+        return (height, width) if portrait else (width, height)
+
+
+def oriented(aspect: tuple[float, float], landscape: bool) -> tuple[float, float]:
+    """縦横比を横向き（幅 ≥ 高さ）または縦向きにそろえて返す。"""
+    long_side, short_side = max(aspect), min(aspect)
+    return (long_side, short_side) if landscape else (short_side, long_side)
 
 
 def clamp_crop(rect: CropRect, image_size: tuple[int, int]) -> CropRect | None:
@@ -48,6 +79,61 @@ def fit_aspect(rect: CropRect, aspect: tuple[float, float]) -> CropRect:
         return CropRect(rect.x + (rect.width - width) // 2, rect.y, width, rect.height)
     height = min(rect.height, max(MIN_SIZE, round(rect.width * aspect_height / aspect_width)))
     return CropRect(rect.x, rect.y + (rect.height - height) // 2, rect.width, height)
+
+
+def constrain_rect(
+    rect: CropRect, aspect: tuple[float, float], image_size: tuple[int, int]
+) -> CropRect | None:
+    """範囲を画像内に収め、縦横比 aspect になるよう左上を固定して縮めた範囲を返す。
+
+    数値入力で比を保つとき用。画像と重ならなければ None。
+    """
+    clamped = clamp_crop(rect, image_size)
+    if clamped is None:
+        return None
+    aspect_width, aspect_height = aspect
+    width, height = clamped.width, clamped.height
+    if width * aspect_height > height * aspect_width:
+        width = min(width, max(MIN_SIZE, round(height * aspect_width / aspect_height)))
+    else:
+        height = min(height, max(MIN_SIZE, round(width * aspect_height / aspect_width)))
+    return CropRect(clamped.x, clamped.y, width, height)
+
+
+def aspect_drag_rect(
+    anchor: tuple[int, int],
+    point: tuple[int, int],
+    aspect: tuple[float, float],
+    image_size: tuple[int, int],
+) -> CropRect:
+    """anchor を固定した角として point の方向へ広げた、縦横比 aspect の範囲を返す。
+
+    ドラッグで比を保って範囲を選ぶとき用。マウスの位置まで届く大きさ（比に対して長い方の
+    辺に合わせる）にし、画像の端を越えるときは比を保ったまま縮める。
+    """
+    anchor_x, anchor_y = anchor
+    image_width, image_height = image_size
+    aspect_width, aspect_height = aspect
+    dx, dy = point[0] - anchor_x, point[1] - anchor_y
+    width, height = float(abs(dx)), float(abs(dy))
+    if width * aspect_height >= height * aspect_width:
+        height = width * aspect_height / aspect_width
+    else:
+        width = height * aspect_width / aspect_height
+
+    max_width = anchor_x if dx < 0 else image_width - anchor_x
+    max_height = anchor_y if dy < 0 else image_height - anchor_y
+    scale = 1.0
+    if width > max_width:
+        scale = max_width / width
+    if height * scale > max_height:
+        scale = max_height / height
+    width_px = int(width * scale + 1e-9)
+    height_px = min(max_height, round(width_px * aspect_height / aspect_width))
+
+    x = anchor_x - width_px if dx < 0 else anchor_x
+    y = anchor_y - height_px if dy < 0 else anchor_y
+    return CropRect(x, y, width_px, height_px)
 
 
 def crop(image: Image.Image, rect: CropRect) -> Image.Image:
