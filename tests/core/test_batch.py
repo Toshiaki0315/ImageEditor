@@ -182,3 +182,19 @@ def test_core_batch_does_not_import_qt():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+def test_batch_draws_watermark_from_preset(tmp_path):
+    from image_editor.core.text import TextPosition, TextSettings
+
+    source = make_image(tmp_path / "a.png", size=(400, 300), color=(0, 0, 0))
+    text = TextSettings(
+        text="■", color=(0, 255, 0), opacity=100, size=20, position=TextPosition.CENTER
+    )
+    look = Preset(name="透かし", text=text)
+
+    path = process_image(source, tmp_path / "out", BatchOptions(look=look, long_side=200))
+
+    saved = load_image(path).image
+    assert saved.size == (200, 150)
+    assert saved.getpixel((100, 75)) == (0, 255, 0)

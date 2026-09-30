@@ -106,3 +106,18 @@ def add_frame(image: Image.Image, frame: FrameType) -> Image.Image:
         framed_alpha.paste(image.getchannel("A"), (left, top))
         framed.putalpha(framed_alpha)
     return framed
+
+
+def margin_box(size: tuple[int, int], frame: FrameType) -> tuple[int, int, int, int] | None:
+    """size の写真にフレームを付けたときの、いちばん広い余白の範囲（左, 上, 右, 下）を返す。
+
+    縦向きのカードは写真の下、横向きのチェキは写真の右の余白。写真と同じ幅（高さ）の範囲で、
+    フレームを付けた後の画像の座標。フレームなしなら None。
+    """
+    if frame is FrameType.NONE:
+        return None
+    left, top, right, bottom = frame_margins(frame, size)
+    width, height = size
+    if right > bottom:
+        return (left + width, top, left + width + right, top + height)
+    return (left, top + height, left + width, top + height + bottom)

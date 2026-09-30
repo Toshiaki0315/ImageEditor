@@ -1402,7 +1402,8 @@ def test_edit_menu_actions(qtbot):
     qtbot.addWidget(window)
 
     edit_menu = [a.menu() for a in window.menuBar().actions() if a.menu()][1]
-    assert [a.text() for a in edit_menu.actions()] == ["元に戻す", "やり直す"]
+    texts = [a.text() for a in edit_menu.actions() if not a.isSeparator()]
+    assert texts == ["元に戻す", "やり直す", "文字・透かし…"]
     assert window.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
     assert window.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
     assert not window.undo_action.isEnabled()
@@ -2261,3 +2262,87 @@ def test_histogram_follows_compare(loaded_window):
     before = loaded_window.drop_area.histogram_view.histogram()
     assert before != gray
     assert before.red[220] > 0  # 加工前は赤 (220, 60, 30) が残る
+
+
+# --- 文字・透かし -------------------------------------------------------------------
+
+
+def test_text_menu_opens_dialog(loaded_window):
+    from image_editor.core.text import TextSettings
+
+    assert loaded_window.text_action.shortcut() == QKeySequence("Ctrl+T")
+    loaded_window.settings_panel.set_text_settings(TextSettings(text="既にある文字"))
+
+    loaded_window.text_action.trigger()
+
+    assert loaded_window.text_dialog.isVisible()
+    assert loaded_window.text_dialog.settings().text == "既にある文字"
+    loaded_window.text_dialog.close()
+
+
+def test_text_button_opens_dialog(loaded_window):
+    loaded_window.settings_panel.text_button.click()
+    assert loaded_window.text_dialog.isVisible()
+    loaded_window.text_dialog.close()
+
+
+def test_text_action_disabled_without_image(window):
+    assert not window.text_action.isEnabled()
+    window.open_text_dialog()
+    assert not window.text_dialog.isVisible()
+
+
+def test_text_dialog_updates_preview_and_save(loaded_window, qtbot, tmp_path):
+    from image_editor.core.text import TextPosition
+
+    loaded_window.open_text_dialog()
+    dialog = loaded_window.text_dialog
+    dialog.opacity_slider.setValue(100)
+    dialog.set_color((0, 255, 0))
+    dialog.position_combo.setCurrentIndex(dialog.position_combo.findData(TextPosition.CENTER))
+    dialog.size_spin.setValue(20)
+    dialog.text_edit.setPlainText("■")
+
+    assert loaded_window.settings_panel.text_settings().text == "■"
+    qtbot.waitUntil(lambda: preview_pixel(loaded_window, 200, 150) == (0, 255, 0), timeout=2000)
+
+    out = tmp_path / "text.png"
+    save_and_wait(qtbot, loaded_window, out)
+    assert load_image(out).image.getpixel((200, 150)) == (0, 255, 0)
+    dialog.close()
+
+
+def test_text_change_can_be_undone_and_syncs_dialog(loaded_window):
+    loaded_window.open_text_dialog()
+    loaded_window.text_dialog.text_edit.setPlainText("あとで戻す")
+
+    loaded_window.undo()
+
+    assert loaded_window.settings_panel.text_settings().text == ""
+    assert loaded_window.text_dialog.text_edit.toPlainText() == ""
+    loaded_window.text_dialog.close()
+
+
+def test_text_is_part_of_preset(loaded_window):
+    from image_editor.core.presets import Preset
+    from image_editor.core.text import TextSettings
+
+    panel = loaded_window.settings_panel
+    panel.set_text_settings(TextSettings(text="透かし"))
+    assert panel.snapshot().settings.text.text == "透かし"
+
+    panel.apply_preset(Preset(name="別の透かし", text=TextSettings(text="© 別")))
+
+    assert panel.text_settings().text == "© 別"
+
+
+def test_new_image_resets_text(loaded_window, tmp_path, questions):
+    from image_editor.core.text import TextSettings
+
+    loaded_window.settings_panel.set_text_settings(TextSettings(text="消える"))
+    path = tmp_path / "other.png"
+    Image.new("RGB", (40, 30)).save(path)
+
+    loaded_window.load_file(path)
+
+    assert loaded_window.settings_panel.text_settings() == TextSettings()
