@@ -42,6 +42,7 @@ src/image_editor/
     diorama.py           # ジオラマ風（ミニチュア風・ティルトシフト）の加工
     exif_info.py         # EXIF・GPS・MakerNote を表示用に読む（exifread を使う）
     makernote.py         # exifread が読めない MakerNote（ペンタックス・リコー・Samsung）を読む
+    tiff.py              # EXIF の IFD の読み書き（保存時に MakerNote を元の位置に置き直す）
     effects.py           # 露出・明るさ・コントラスト・色温度・彩度・ディテール（シャープ・ぼかし・ノイズ除去）・周辺減光・経年劣化
     transform.py         # 回転・反転・リサイズ・トリミング・縦横比
     shapes.py            # 形（角丸・円）の切り抜き
@@ -110,6 +111,7 @@ tests/
 
 ## 注意点・既知の落とし穴
 
+- EXIF を Pillow の `Image.Exif` で書き直すと MakerNote の中の値の位置がずれて壊れる。保存は `io.prepare_exif`（`core/tiff.py` の `ExifBlock`）を通す。
 - JPEG は透過を持てない。RGBA / P / LA 画像を JPEG 保存するときは白背景に合成して RGB 化する。
 - GIF は初版では**先頭フレームのみ**扱う。アニメーション GIF を読み込んだ場合はステータスバーで通知する。複数ページ TIFF も先頭ページのみ。
 - 16bit 画像 (`I;16`) や CMYK は読み込み時に RGB/RGBA へ変換する。

@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import os
+import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
+
+from image_editor.core.tiff import (
+    TAG_EXIF_IFD,
+    TAG_GPS_IFD,
+    TAG_MAKERNOTE,
+    TAG_ORIENTATION,
+    TAG_PIXEL_X,
+    TAG_PIXEL_Y,
+    ExifBlock,
+    tiff_block,
+)
 
 # HEIC / HEIF（iPhone の写真）を Image.open で読めるようにする（読み込みだけに使う）
 register_heif_opener()
@@ -58,12 +70,8 @@ _WHITE = (255, 255, 255)
 
 # EXIF を書き込める保存形式
 _EXIF_FORMATS = frozenset({"JPEG", "PNG", "TIFF"})
-# EXIF のタグ
-_TAG_ORIENTATION = 0x0112
-_TAG_EXIF_IFD = 0x8769
-_TAG_GPS_IFD = 0x8825
-_TAG_PIXEL_X = 0xA002  # Exif IFD の画像の幅
-_TAG_PIXEL_Y = 0xA003  # Exif IFD の画像の高さ
+# JPEG の APP1 に入る EXIF の大きさの上限（"Exif\0\0" を含む）。超えたら MakerNote を外す
+MAX_EXIF_BYTES = 65533
 
 
 class UnsupportedImageError(Exception):
@@ -78,7 +86,9 @@ class LoadedImage:
     format: str
     is_animated: bool
     path: Path
-    exif: bytes | None = None  # 元ファイルの EXIF（保存用に整え直したもの。なければ None）
+    # 保存するときの元にする EXIF（なければ None）。元のバイト列があればそれ、なければ
+    # （TIFF など）Pillow で読み直したもの（位置がずれて壊れるので MakerNote は除く）
+    exif: bytes | None = None
     # 元ファイルの EXIF のバイト列そのもの（"Exif\0\0" で始まることもある）。MakerNote の中の
     # 値の位置がずれないよう、表示 (core.exif_info) にはこちらを使う。TIFF ファイルでは None
     raw_exif: bytes | None = None
@@ -173,8 +183,10 @@ def load_image(path: StrPath) -> LoadedImage:
                 raise UnsupportedImageError(f"対応していない画像形式です: {source.format}")
             is_animated = getattr(source, "n_frames", 1) > 1
             source.seek(0)
-            exif = _read_exif(source)
             raw_exif = source.info.get("exif")
+            if not isinstance(raw_exif, bytes):
+                raw_exif = None
+            exif = raw_exif if tiff_block(raw_exif) is not None else _read_exif(source)
             # exif_transpose は常に新しい画像を返すので、ファイルを閉じても使える
             image = ImageOps.exif_transpose(source)
             image.load()
@@ -189,7 +201,7 @@ def load_image(path: StrPath) -> LoadedImage:
         is_animated=is_animated,
         path=path,
         exif=exif,
-        raw_exif=raw_exif if isinstance(raw_exif, bytes) else None,
+        raw_exif=raw_exif,
     )
 
 
@@ -245,40 +257,78 @@ def save_edited(
     """編集した画像を「保存の設定」に従って保存する。
 
     source_exif は元画像の EXIF。options.keep_exif のときだけ、prepare_exif で整えて書き込む。
+    TIFF は Pillow が EXIF を書き直して MakerNote の中の値の位置がずれるので、MakerNote を残さない。
     """
     exif = None
     if options.keep_exif and source_exif is not None:
-        exif = prepare_exif(source_exif, image.size, keep_gps=options.keep_gps)
+        keep_maker_note = format_for_path(path) != "TIFF"
+        exif = prepare_exif(source_exif, image.size, options.keep_gps, keep_maker_note)
     save_image(image, path, quality=options.quality, exif=exif)
 
 
-def prepare_exif(exif: bytes, size: tuple[int, int], keep_gps: bool = False) -> bytes:
+def prepare_exif(
+    exif: bytes,
+    size: tuple[int, int],
+    keep_gps: bool = False,
+    keep_maker_note: bool = True,
+) -> bytes:
     """元画像の EXIF を、編集後の画像に書き込める形に整えて返す（元のデータは変えない）。
 
     - 向き (Orientation) は読み込み時に補正済みなので 1（そのまま）にする
     - Exif IFD の画像の幅・高さを size に合わせる
     - keep_gps が False なら位置情報 (GPS) を取り除く
-    撮影日時・カメラなどのそれ以外のタグは残す。
+    - MakerNote（メーカー独自の情報）は元と同じ位置に置き、中の値の位置がずれないようにする。
+      keep_maker_note が False のとき・EXIF が JPEG に入らないほど大きいとき・元の EXIF の形を
+      読めないときは、壊れた MakerNote を書かないよう残さない
+    - サムネイルは編集前の画像なので残さない
+    撮影日時・カメラなどのそれ以外のタグは元の値のまま残す。
     """
+    try:
+        block = ExifBlock.parse(exif)
+    except (ValueError, struct.error):
+        return _prepare_with_pillow(exif, size, keep_gps)
+    block.set_short(block.ifd0, TAG_ORIENTATION, 1)
+    if not keep_gps:
+        block.gps = None
+    for tag, length in ((TAG_PIXEL_X, size[0]), (TAG_PIXEL_Y, size[1])):
+        if tag in block.exif:
+            block.set_long(block.exif, tag, length)
+    data = block.to_bytes(keep_maker_note)
+    if keep_maker_note and len(data) > MAX_EXIF_BYTES:
+        data = block.to_bytes(keep_maker_note=False)
+    return data
+
+
+def _prepare_with_pillow(exif: bytes, size: tuple[int, int], keep_gps: bool) -> bytes:
+    """形を読めない EXIF を、Pillow で読んで整える（MakerNote は位置がずれるので外す）。"""
     data = Image.Exif()
     data.load(exif)
-    data[_TAG_ORIENTATION] = 1
-    if not keep_gps and _TAG_GPS_IFD in data:
-        del data[_TAG_GPS_IFD]
-    if _TAG_EXIF_IFD in data:
-        exif_ifd = data.get_ifd(_TAG_EXIF_IFD)
-        if _TAG_PIXEL_X in exif_ifd:
-            exif_ifd[_TAG_PIXEL_X] = size[0]
-        if _TAG_PIXEL_Y in exif_ifd:
-            exif_ifd[_TAG_PIXEL_Y] = size[1]
+    data[TAG_ORIENTATION] = 1
+    if not keep_gps and TAG_GPS_IFD in data:
+        del data[TAG_GPS_IFD]
+    if TAG_EXIF_IFD in data:
+        exif_ifd = data.get_ifd(TAG_EXIF_IFD)
+        exif_ifd.pop(TAG_MAKERNOTE, None)
+        if TAG_PIXEL_X in exif_ifd:
+            exif_ifd[TAG_PIXEL_X] = size[0]
+        if TAG_PIXEL_Y in exif_ifd:
+            exif_ifd[TAG_PIXEL_Y] = size[1]
     return data.tobytes()
 
 
 def _read_exif(source: Image.Image) -> bytes | None:
-    """画像の EXIF を返す。なければ、または壊れていて読めなければ None。"""
+    """元のバイト列がないとき（TIFF など）に、Pillow で読んだ EXIF を返す。
+
+    Pillow で書き直すと MakerNote の中の値の位置がずれるので、MakerNote は外す。
+    なければ、または壊れていて読めなければ None。
+    """
     try:
         exif = source.getexif()
-        return exif.tobytes() if len(exif) else None
+        if not len(exif):
+            return None
+        if TAG_EXIF_IFD in exif:
+            exif.get_ifd(TAG_EXIF_IFD).pop(TAG_MAKERNOTE, None)
+        return exif.tobytes()
     except Exception:  # EXIF が壊れていても画像は読み込めるようにする
         return None
 

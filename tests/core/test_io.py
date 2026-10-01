@@ -6,6 +6,7 @@ import pytest
 from PIL import Image
 
 from image_editor.core.io import (
+    MAX_EXIF_BYTES,
     SAVABLE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     LoadedImage,
@@ -608,3 +609,112 @@ def test_load_keeps_raw_exif(tmp_path):
     plain = tmp_path / "plain.png"
     Image.new("RGB", (4, 4)).save(plain)
     assert load_image(plain).raw_exif is None
+
+
+# --- MakerNote を保つ (#107) ------------------------------------------------------------
+
+
+def canon_exif(exif_samples, **kwargs) -> bytes:
+    note = exif_samples.canon_note(
+        [(0x0006, "Canon EOS R5 IMAGE TYPE"), (0x0007, "Firmware Version 1.8.1")]
+    )
+    return exif_samples.build_exif(
+        make="Canon",
+        exif=[(0xA002, ("long", [40])), (0xA003, ("long", [20]))],
+        maker_note=note,
+        **kwargs,
+    )
+
+
+def maker_note_values(path) -> dict[str, str]:
+    from image_editor.core.exif_info import ExifGroup, exif_info_of
+
+    info = exif_info_of(load_image(path))
+    return {e.tag: e.value for e in info.entries if e.group is ExifGroup.MAKERNOTE}
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".png"])
+def test_saved_maker_note_is_readable(tmp_path, exif_samples, suffix):
+    source = tmp_path / "source.jpg"
+    make_sample().save(source, exif=canon_exif(exif_samples))
+    loaded = load_image(source)
+    assert maker_note_values(source)["ImageType"] == "Canon EOS R5 IMAGE TYPE"
+
+    out = tmp_path / f"out{suffix}"
+    save_edited(loaded.image.resize((20, 10)), out, SaveOptions(), loaded.exif)
+
+    values = maker_note_values(out)
+    assert values["ImageType"] == "Canon EOS R5 IMAGE TYPE"
+    assert values["FirmwareVersion"] == "Firmware Version 1.8.1"
+    _, exif_ifd = read_exif(out)
+    assert (exif_ifd[TAG_PIXEL_X], exif_ifd[TAG_PIXEL_Y]) == (20, 10)
+
+
+def test_tiff_output_drops_maker_note(tmp_path, exif_samples):
+    # TIFF は Pillow が EXIF を書き直す（MakerNote の中の位置がずれる）ので残さない
+    source = tmp_path / "source.jpg"
+    make_sample().save(source, exif=canon_exif(exif_samples))
+    loaded = load_image(source)
+
+    out = tmp_path / "out.tif"
+    save_edited(loaded.image, out, SaveOptions(), loaded.exif)
+
+    assert maker_note_values(out) == {}
+    _, exif_ifd = read_exif(out)
+    assert exif_ifd[TAG_PIXEL_X] == 40
+
+
+def test_prepare_exif_drops_maker_note_when_too_large(exif_samples):
+    note = exif_samples.pentax_note([(0x0229, "1234567"), (0x03FE, bytes(MAX_EXIF_BYTES))])
+    source = exif_samples.build_exif(make="PENTAX", maker_note=note)
+
+    prepared = prepare_exif(source, (10, 10))
+
+    assert len(prepared) <= MAX_EXIF_BYTES
+    exif = Image.Exif()
+    exif.load(prepared)
+    assert 0x927C not in exif.get_ifd(TAG_EXIF_IFD)
+    assert exif[TAG_MAKE] == "PENTAX"
+
+
+def test_prepare_exif_keep_maker_note_false(exif_samples):
+    exif = Image.Exif()
+    exif.load(prepare_exif(canon_exif(exif_samples), (10, 10), keep_maker_note=False))
+    assert 0x927C not in exif.get_ifd(TAG_EXIF_IFD)
+
+
+def test_prepare_exif_falls_back_to_pillow_for_unknown_layout(monkeypatch):
+    # 形を読めない EXIF は Pillow で整える（MakerNote は外す）
+    import image_editor.core.io as io_module
+
+    def broken(_data):
+        raise ValueError("読めない")
+
+    monkeypatch.setattr(io_module.ExifBlock, "parse", broken)
+    prepared = Image.Exif()
+    prepared.load(prepare_exif(make_exif(orientation=6).tobytes(), (30, 20)))
+    assert prepared[TAG_ORIENTATION] == 1
+    assert prepared.get_ifd(TAG_EXIF_IFD)[TAG_PIXEL_X] == 30
+
+
+def test_load_uses_raw_exif_for_saving(tmp_path, exif_samples):
+    path = tmp_path / "raw.jpg"
+    make_sample().save(path, exif=canon_exif(exif_samples))
+    loaded = load_image(path)
+    assert loaded.exif == loaded.raw_exif  # 元のバイト列から保存する
+
+
+def test_load_tiff_exif_has_no_maker_note(tmp_path):
+    # 元のバイト列がない TIFF は Pillow で読み直すので、位置のずれる MakerNote は外しておく
+    exif = Image.Exif()
+    exif[TAG_MAKE] = "TIFFMaker"
+    exif.get_ifd(TAG_EXIF_IFD)[0x927C] = b"\x00" * 20
+    path = tmp_path / "with_note.tif"
+    make_sample().save(path, exif=exif.tobytes())
+
+    loaded = load_image(path)
+
+    restored = Image.Exif()
+    restored.load(loaded.exif)
+    assert restored[TAG_MAKE] == "TIFFMaker"
+    assert 0x927C not in restored.get_ifd(TAG_EXIF_IFD)
