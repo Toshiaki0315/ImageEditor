@@ -30,7 +30,7 @@ from image_editor.ui.crop_overlay import CropOverlay
 from image_editor.ui.histogram_view import HistogramView
 from image_editor.ui.qt_image import pil_to_qimage
 
-PLACEHOLDER_TEXT = "ここに画像をドロップしてください"
+PLACEHOLDER_TEXT = "ここに画像をドロップしてください\n（⌘V で貼り付けもできます）"
 MARGIN = 16
 BORDER_RADIUS = 12
 HIGHLIGHT_FILL_ALPHA = 40
@@ -462,7 +462,7 @@ class DropArea(QWidget):
                 event.ignore()
             return
         event.acceptProposedAction()
-        self.files_dropped.emit(_local_paths(event.mimeData()))
+        self.files_dropped.emit(local_paths(event.mimeData()))
 
     def _set_highlighted(self, highlighted: bool) -> None:
         if self._highlighted != highlighted:
@@ -470,7 +470,8 @@ class DropArea(QWidget):
             self.update()
 
 
-def _local_paths(mime: QMimeData | None) -> list[Path]:
+def local_paths(mime: QMimeData | None) -> list[Path]:
+    """ドロップ・クリップボードの内容のうち、ローカルのファイルのパスを返す。"""
     if mime is None or not mime.hasUrls():
         return []
     return [Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile()]
@@ -478,5 +479,5 @@ def _local_paths(mime: QMimeData | None) -> list[Path]:
 
 def _accepts(mime: QMimeData | None) -> bool:
     """先頭のローカルファイルが対応形式なら True（先頭の 1 枚だけを読み込むため）。"""
-    paths = _local_paths(mime)
+    paths = local_paths(mime)
     return bool(paths) and is_supported(paths[0])

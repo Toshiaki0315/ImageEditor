@@ -20,6 +20,8 @@ from image_editor.core.io import (
     is_supported,
     load_image,
     normalize_mode,
+    pasted_image,
+    pasted_save_path,
     path_key,
     prepare_exif,
     save_edited,
@@ -718,3 +720,43 @@ def test_load_tiff_exif_has_no_maker_note(tmp_path):
     restored.load(loaded.exif)
     assert restored[TAG_MAKE] == "TIFFMaker"
     assert 0x927C not in restored.get_ifd(TAG_EXIF_IFD)
+
+
+# --- クリップボードから貼り付けた画像 (#109) -------------------------------------------
+
+
+def test_pasted_image_has_no_file():
+    source = Image.new("LA", (6, 4))
+    loaded = pasted_image(source)
+    assert loaded.path is None
+    assert loaded.name == "クリップボードの画像"
+    assert loaded.format == "PNG"
+    assert loaded.image.mode == "RGBA"  # RGB / RGBA にそろえる
+    assert loaded.image is not source
+    assert loaded.exif is None and loaded.raw_exif is None
+
+
+def test_loaded_name_is_file_name(tmp_path):
+    path = tmp_path / "photo.png"
+    make_sample().save(path)
+    assert load_image(path).name == "photo.png"
+
+
+def test_pasted_save_path(tmp_path):
+    from datetime import datetime
+
+    now = datetime(2026, 10, 2, 6, 45, 0)
+    first = pasted_save_path(now, tmp_path)
+    assert first == tmp_path / "クリップボード_20261002-064500.png"
+    first.touch()
+    assert pasted_save_path(now, tmp_path) == tmp_path / "クリップボード_20261002-064500_2.png"
+
+
+def test_pasted_save_path_default_folder(tmp_path, monkeypatch):
+    import image_editor.core.io as io_module
+
+    monkeypatch.setattr(io_module, "PICTURES_DIR", tmp_path / "Pictures")
+    monkeypatch.setattr(io_module.Path, "home", lambda: tmp_path)
+    assert pasted_save_path().parent == tmp_path  # ピクチャフォルダがなければホーム
+    (tmp_path / "Pictures").mkdir()
+    assert pasted_save_path().parent == tmp_path / "Pictures"

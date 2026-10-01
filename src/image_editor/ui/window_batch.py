@@ -45,7 +45,8 @@ class BatchMixin:
             presets=panel.presets(),
             long_side=max(width, height) if self.loaded is not None else DEFAULT_BATCH_LONG_SIDE,
             resize=settings.width is not None or settings.height is not None,
-            sources=[self.loaded.path] if self.loaded is not None else [],
+            # 貼り付けた画像はファイルがないので一覧に入れない
+            sources=[self.loaded.path] if self.loaded and self.loaded.path else [],
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

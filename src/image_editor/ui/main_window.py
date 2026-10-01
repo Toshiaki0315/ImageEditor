@@ -5,13 +5,15 @@ from pathlib import Path
 
 from PIL import Image
 from PyQt6.QtCore import (
+    QEvent,
+    QObject,
     QSettings,
     Qt,
     QThreadPool,
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
+from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -34,7 +36,10 @@ from image_editor.core.io import (
     default_save_path,
     is_same_file,
     is_savable,
+    is_supported,
     load_image,
+    pasted_image,
+    pasted_save_path,
 )
 from image_editor.core.pipeline import (
     EditSettings,
@@ -47,8 +52,9 @@ from image_editor.core.presets import (
     PresetError,
     load_presets,
 )
-from image_editor.ui.drop_area import DropArea
+from image_editor.ui.drop_area import DropArea, local_paths
 from image_editor.ui.history import History
+from image_editor.ui.qt_image import qimage_to_pil
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
 from image_editor.ui.text_dialog import TextDialog
 from image_editor.ui.window_batch import BatchMixin
@@ -78,6 +84,7 @@ SAVE_DIALOG_FILTERS: dict[str, str] = {
     "TIFF": "TIFF (*.tif *.tiff)",
     "BMP": "BMP (*.bmp)",
 }
+NOTHING_TO_PASTE_MESSAGE = "クリップボードに画像がありません"
 DISCARD_QUESTION = "保存していない変更があります。破棄してよろしいですか？"
 # 設定変更からプレビューを自動更新するまでの待ち時間 (FR-UI-40)
 AUTO_PREVIEW_DELAY_MS = 300
@@ -294,6 +301,13 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         edit_menu.addAction(self.redo_action)
 
         edit_menu.addSeparator()
+        # クリップボードの画像（Finder でコピーしたファイルならそのファイル）を開く
+        self.paste_action = QAction("貼り付け", self)
+        self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_action.triggered.connect(self.paste)
+        edit_menu.addAction(self.paste_action)
+
+        edit_menu.addSeparator()
         self.text_action = QAction("文字・透かし…", self)
         self.text_action.setShortcut(QKeySequence("Ctrl+T"))
         self.text_action.triggered.connect(self.open_text_dialog)
@@ -351,7 +365,60 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
                 with_formats=True,
             )
             return False
+        self._open(loaded, notes)
+        return True
 
+    def load_pasted_image(self, image: Image.Image) -> bool:
+        """クリップボードから貼り付けた画像を、元のファイルのない画像として開く。
+
+        未保存の変更があれば確認し、キャンセルされたら開かない。開けたら True を返す。
+        """
+        if self.is_saving() or not self._confirm_discard():
+            return False
+        try:
+            loaded = pasted_image(image)
+        except Exception as e:  # NFR-04
+            self._show_error("画像を貼り付けられません", f"{type(e).__name__}: {e}")
+            return False
+        self._open(loaded)
+        return True
+
+    def paste(self) -> None:
+        """クリップボードの画像を開く。Finder でコピーしたファイルなら、そのファイルを開く。"""
+        if self.is_busy():
+            return
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData() if clipboard is not None else None
+        paths = local_paths(mime)
+        if paths:
+            self._on_files_dropped(paths)  # ドロップと同じく先頭の 1 枚を開く
+            return
+        image = clipboard.image() if clipboard is not None else None
+        if image is None or image.isNull():
+            self._notify(NOTHING_TO_PASTE_MESSAGE)
+            return
+        try:
+            pil_image = qimage_to_pil(image)
+        except Exception as e:  # NFR-04
+            self._show_error("画像を貼り付けられません", f"{type(e).__name__}: {e}")
+            return
+        self.load_pasted_image(pil_image)
+
+    def _paste_opens_image(self) -> bool:
+        """⌘V で（入力欄への文字の貼り付けではなく）画像を開くか。
+
+        クリップボードに対応形式のファイルがあるか、文字がなく画像があるとき。
+        """
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData() if clipboard is not None else None
+        if mime is None:
+            return False
+        if any(is_supported(path) for path in local_paths(mime)):
+            return True
+        return mime.hasImage() and not mime.hasText()
+
+    def _open(self, loaded: LoadedImage, notes: list[str] | None = None) -> None:
+        """読み込んだ画像を表示し、設定・履歴を初期状態にする。"""
         self._comparing = False
         self._leave_zoom()
         self.loaded = loaded
@@ -369,11 +436,10 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self.update_preview()
         self._reset_history()
         # macOS のタイトルバーにファイル名と、クリックで場所を示すアイコンを出す
-        self.setWindowTitle(f"{path.name} — {WINDOW_TITLE}")
-        self.setWindowFilePath(str(path))
+        self.setWindowTitle(f"{loaded.name} — {WINDOW_TITLE}")
+        self.setWindowFilePath(str(loaded.path) if loaded.path is not None else "")
         self._update_status()
         self._update_actions()
-        return True
 
     def _on_files_dropped(self, paths: list[Path]) -> None:
         if not paths:
@@ -425,7 +491,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
             path_text, chosen_filter = QFileDialog.getSaveFileName(
                 self,
                 "保存",
-                str(default_save_path(self.loaded.path)),
+                str(self._default_save_path()),
                 ";;".join(SAVE_DIALOG_FILTERS.values()),
                 selected_filter,
             )
@@ -441,10 +507,17 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
                     with_formats=True,
                 )
                 return
-            if not is_same_file(path, self.loaded.path):
+            if self.loaded.path is None or not is_same_file(path, self.loaded.path):
                 break
             self._show_error("保存できません", SAME_FILE_MESSAGE)
         self.save_to(path)
+
+    def _default_save_path(self) -> Path:
+        """保存ダイアログの初期パス（貼り付けた画像はピクチャフォルダの PNG）。"""
+        assert self.loaded is not None
+        if self.loaded.path is None:
+            return pasted_save_path()
+        return default_save_path(self.loaded.path)
 
     def save_to(self, path: Path) -> bool:
         """現在の設定を原寸で適用して保存する処理をワーカースレッドで開始する。
@@ -454,7 +527,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         """
         if self.loaded is None or self.is_saving():
             return False
-        if is_same_file(path, self.loaded.path):
+        if self.loaded.path is not None and is_same_file(path, self.loaded.path):
             # 元の画像は上書きしない
             self._show_error("保存できません", SAME_FILE_MESSAGE)
             return False
@@ -616,13 +689,33 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         )
         return answer == accept
 
+    def _notify(self, message: str) -> None:
+        """ステータスバーで知らせる（画像がなければ案内の代わりに出す）。"""
+        if self.loaded is None:
+            self.status_label.setText(message)
+        else:
+            self._update_status(message)
+
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:
+        # 数値欄などにフォーカスがあっても、クリップボードが画像（文字なし）やファイルなら
+        # 入力欄に渡さず、メニューの「貼り付け」で画像を開く
+        if (
+            isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.ShortcutOverride
+            and event.matches(QKeySequence.StandardKey.Paste)
+            and self.isActiveWindow()
+            and self._paste_opens_image()
+        ):
+            return True
+        return super().eventFilter(watched, event)
+
     def _update_status(self, extra: str | None = None) -> None:
         """ステータスバーにファイル名・原寸・出力予定サイズを表示する。"""
         if self.loaded is None:
             self.status_label.setText(NO_IMAGE_MESSAGE)
             return
         width, height = self.loaded.image.size
-        parts = [self.loaded.path.name, f"原寸 {width}×{height} px"]
+        parts = [self.loaded.name, f"原寸 {width}×{height} px"]
         try:
             out_width, out_height = output_size(
                 self.loaded.image.size, self.settings_panel.settings()
@@ -645,6 +738,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self.zoom_action.setEnabled(self.loaded is not None and not self._zoomed)
         self.fit_action.setEnabled(self._zoomed)
         self.batch_action.setEnabled(not busy)
+        self.paste_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
         # まだ履歴に積んでいない変更があれば、それを元に戻せる
         pending = self.loaded is not None and (

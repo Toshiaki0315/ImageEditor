@@ -6,6 +6,7 @@ import os
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -70,6 +71,11 @@ _WHITE = (255, 255, 255)
 
 # EXIF を書き込める保存形式
 _EXIF_FORMATS = frozenset({"JPEG", "PNG", "TIFF"})
+# クリップボードから貼り付けた画像の表示名と、保存するときの名前・形式・場所
+PASTED_NAME = "クリップボードの画像"
+PASTED_FILE_PREFIX = "クリップボード_"
+PASTED_SAVE_SUFFIX = ".png"
+PICTURES_DIR = Path.home() / "Pictures"
 # JPEG の APP1 に入る EXIF の大きさの上限（"Exif\0\0" を含む）。超えたら MakerNote を外す
 MAX_EXIF_BYTES = 65533
 
@@ -85,13 +91,41 @@ class LoadedImage:
     image: Image.Image
     format: str
     is_animated: bool
-    path: Path
+    path: Path | None  # 元のファイル。クリップボードから貼り付けた画像は None
     # 保存するときの元にする EXIF（なければ None）。元のバイト列があればそれ、なければ
     # （TIFF など）Pillow で読み直したもの（位置がずれて壊れるので MakerNote は除く）
     exif: bytes | None = None
     # 元ファイルの EXIF のバイト列そのもの（"Exif\0\0" で始まることもある）。MakerNote の中の
     # 値の位置がずれないよう、表示 (core.exif_info) にはこちらを使う。TIFF ファイルでは None
     raw_exif: bytes | None = None
+
+    @property
+    def name(self) -> str:
+        """表示名（ファイル名。貼り付けた画像は「クリップボードの画像」）。"""
+        return self.path.name if self.path is not None else PASTED_NAME
+
+
+def pasted_image(image: Image.Image) -> LoadedImage:
+    """クリップボードから貼り付けた画像を、元のファイルのない画像として返す（形式は PNG 扱い）。"""
+    return LoadedImage(
+        image=normalize_mode(image.copy()), format="PNG", is_animated=False, path=None
+    )
+
+
+def pasted_save_path(now: datetime | None = None, folder: Path | None = None) -> Path:
+    """貼り付けた画像の保存ダイアログの初期パス「クリップボード_日時.png」を返す。
+
+    場所は folder（省略時はピクチャフォルダ。なければホーム）。同じ名前があれば _2 … を付ける。
+    """
+    if folder is None:
+        folder = PICTURES_DIR if PICTURES_DIR.is_dir() else Path.home()
+    stem = f"{PASTED_FILE_PREFIX}{(now or datetime.now()):%Y%m%d-%H%M%S}"
+    candidate = folder / f"{stem}{PASTED_SAVE_SUFFIX}"
+    number = 2
+    while candidate.exists():
+        candidate = folder / f"{stem}_{number}{PASTED_SAVE_SUFFIX}"
+        number += 1
+    return candidate
 
 
 @dataclass(frozen=True)
