@@ -11,6 +11,7 @@ from PyQt6.QtGui import QFileOpenEvent
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from image_editor import __version__
+from image_editor.core.io import load_image
 from image_editor.ui.main_window import WINDOW_TITLE, MainWindow
 
 ORGANIZATION_DOMAIN = "io.github.toshiaki0315"
@@ -55,6 +56,15 @@ class ImageEditorApplication(QApplication):
 def create_window() -> MainWindow:
     """メインウィンドウを生成する。"""
     return MainWindow()
+
+
+def can_load(path: Path) -> bool:
+    """画像として読み込めるかを返す（ダイアログは出さない）。"""
+    try:
+        load_image(path)
+    except Exception:  # 読めない理由は問わない（起動確認で失敗にするだけ）
+        return False
+    return True
 
 
 def files_from_argv(argv: Sequence[str]) -> list[Path]:
@@ -110,10 +120,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # 引数で渡されたファイル（先頭の 1 枚）と、起動前に Finder から要求されたファイルを開く
     files = files_from_argv(argv)
+    if SMOKE_TEST_OPTION in argv:
+        # 起動確認: 渡したファイルが読めなければ失敗にする（.app に形式の部品が入っているかの
+        # 確認）。読めないときにエラーのダイアログで止まらないよう、画面に出す前に確かめる
+        if files and not can_load(files[0]):
+            return 1
+        QTimer.singleShot(500, app.quit)
     if files:
         window.load_file(files[0])
     app.set_file_open_handler(window.load_file)
-
-    if SMOKE_TEST_OPTION in argv:
-        QTimer.singleShot(500, app.quit)
     return app.exec()

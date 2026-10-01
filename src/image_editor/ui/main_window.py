@@ -37,7 +37,7 @@ from image_editor.core.io import (
     UnsupportedImageError,
     default_save_path,
     is_same_file,
-    is_supported,
+    is_savable,
     load_image,
 )
 from image_editor.core.pipeline import (
@@ -70,7 +70,7 @@ MINIMUM_SIZE = (900, 600)
 SETTINGS_PANEL_WIDTH = 420  # 「加工」のラベル・スライダー (225px)・数値表示が欠けずに収まる幅
 
 NO_IMAGE_MESSAGE = "画像が読み込まれていません"
-FORMATS_TEXT = "PNG / JPEG / GIF / TIFF / BMP"
+FORMATS_TEXT = "PNG / JPEG / GIF / TIFF / BMP（HEIC / HEIF は読み込みのみ）"
 OPEN_DIALOG_FILTER = "画像ファイル ({})".format(
     " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
 )
@@ -626,7 +626,8 @@ class MainWindow(QMainWindow):
         """保存ダイアログを開き、原寸で処理して書き出す。"""
         if self.loaded is None:
             return
-        selected_filter = SAVE_DIALOG_FILTERS.get(self.loaded.format, "")
+        # 保存できない形式（HEIC など）を開いたときは JPEG で保存する
+        selected_filter = SAVE_DIALOG_FILTERS.get(self.loaded.format, SAVE_DIALOG_FILTERS["JPEG"])
         # 元の画像と同じファイルが選ばれたら、通知してダイアログを開き直す
         while True:
             path_text, chosen_filter = QFileDialog.getSaveFileName(
@@ -641,7 +642,7 @@ class MainWindow(QMainWindow):
             path = Path(path_text)
             if not path.suffix:
                 path = path.with_suffix(_first_extension(chosen_filter or selected_filter))
-            if not is_supported(path):
+            if not is_savable(path):
                 self._show_error(
                     "保存できません",
                     f"対応していない拡張子です: {path.suffix}",

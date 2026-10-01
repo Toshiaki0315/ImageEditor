@@ -91,3 +91,18 @@ def test_excepthook_logs_and_shows_dialog(qapp, tmp_path, monkeypatch):
 
     assert "ValueError: boom" in log_file.read_text()
     assert len(shown) == 1 and "boom" in shown[0]
+
+
+def test_can_load(tmp_path):
+    from PIL import Image
+
+    from image_editor.app import can_load
+
+    good = tmp_path / "a.heic"
+    Image.new("RGB", (8, 8)).save(good, format="HEIF")
+    broken = tmp_path / "broken.heic"
+    broken.write_bytes(b"not a heic")
+
+    assert can_load(good)
+    assert not can_load(broken)
+    assert not can_load(tmp_path / "missing.png")
