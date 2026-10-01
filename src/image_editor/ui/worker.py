@@ -7,7 +7,7 @@ from PIL import Image
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
 from image_editor.core.batch import BatchOptions, run_batch
-from image_editor.core.io import SaveOptions, prepare_exif, save_image
+from image_editor.core.io import SaveOptions, save_edited
 from image_editor.core.pipeline import EditSettings, apply_edits
 
 
@@ -43,10 +43,7 @@ class SaveTask(QRunnable):
         """ワーカースレッドで呼ばれる。結果はシグナルで返す。"""
         try:
             edited = apply_edits(self._original, self._settings)
-            exif = None
-            if self._options.keep_exif and self._exif is not None:
-                exif = prepare_exif(self._exif, edited.size, keep_gps=self._options.keep_gps)
-            save_image(edited, self._path, quality=self._options.quality, exif=exif)
+            save_edited(edited, self._path, self._options, self._exif)
         except Exception as e:  # 例外はスレッド外に出さず UI に通知する (NFR-04)
             self.signals.failed.emit(self._path, f"{type(e).__name__}: {e}")
         else:

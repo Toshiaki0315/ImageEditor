@@ -404,3 +404,9 @@ def test_transform_rect_points_to_same_part(op, rect):
 
     expected = crop(image, rect).transpose(OP_TRANSPOSE[op])
     assert crop(rotated, moved).tobytes() == expected.tobytes()
+
+
+def test_crop_rect_edges_and_box():
+    rect = CropRect(10, 20, 30, 40)
+    assert (rect.right, rect.bottom) == (40, 60)
+    assert rect.box == (10, 20, 40, 60)
