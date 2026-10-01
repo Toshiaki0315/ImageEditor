@@ -24,7 +24,6 @@ from image_editor.core.shapes import ShapeType
 from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
-from image_editor.ui.settings_panel import ElidedLabel
 
 
 def test_window_opens(qtbot):
@@ -1025,14 +1024,13 @@ def test_panel_labels_are_not_cut_off(window, qtbot, size):
     ]
     detail = f"margins=({margins.left()}, {margins.right()}) items={widths}"
     assert panel.width() >= panel.minimumSizeHint().width(), detail
-    for label in panel.findChildren(QLabel):
-        if not (label.text() and label.isVisible()):
-            continue
-        if isinstance(label, ElidedLabel):
-            # 「保存の設定」の要約は、幅が足りなければ「…」で省略する（空にはならない）
-            assert label.width() > 0, label.text()
-            continue
-        assert label.width() >= label.sizeHint().width(), label.text()
+    # どのタブでもラベルが欠けない
+    for index in range(panel.tabs.count()):
+        panel.set_current_tab(index)
+        qtbot.wait(10)
+        for label in panel.findChildren(QLabel):
+            if label.text() and label.isVisible():
+                assert label.width() >= label.sizeHint().width(), (index, label.text())
 
 
 # --- 露出・設定パネルのスクロール -------------------------------------------------
@@ -1056,18 +1054,18 @@ def test_saved_image_has_exposure(loaded_window, qtbot, tmp_path):
     assert sum(load_image(out).image.getpixel((300, 150))) < (40 + 120 + 200) * 0.6
 
 
-def test_settings_panel_scrolls_in_small_window(window, qtbot):
+def test_settings_panel_fits_in_smallest_window(window, qtbot):
+    # タブに分けたので、いちばん小さいウィンドウ (900x600) でもどのタブもスクロールしない
     window.resize(900, 600)
     qtbot.wait(50)
     scroll = window.settings_scroll
     panel = window.settings_panel
-
-    # 縦に収まらないときはスクロールでき、パネルは本来の高さで表示される（詰まらない）
-    assert scroll.verticalScrollBar().maximum() > 0
-    assert panel.height() >= panel.minimumSizeHint().height()
-    # 一番下の「保存」ボタンまでスクロールで届く
-    scroll.ensureWidgetVisible(panel.save_button)
-    qtbot.wait(20)
+    for index in range(panel.tabs.count()):
+        panel.set_current_tab(index)
+        qtbot.wait(10)
+        assert scroll.verticalScrollBar().maximum() == 0, index
+        assert panel.height() >= panel.minimumSizeHint().height()
+    # 「保存」ボタンも見えている
     top_left = panel.save_button.mapTo(scroll.viewport(), panel.save_button.rect().topLeft())
     assert 0 <= top_left.y() <= scroll.viewport().height() - panel.save_button.height()
 
@@ -1653,7 +1651,6 @@ def test_save_uses_quality(loaded_window, qtbot, tmp_path):
 def test_save_options_are_remembered(qtbot, preferences):
     first = MainWindow()
     qtbot.addWidget(first)
-    first.settings_panel.set_save_options_expanded(True)
     first.settings_panel.quality_slider.setValue(70)
     first.settings_panel.keep_gps_check.setChecked(True)
 
@@ -1662,12 +1659,10 @@ def test_save_options_are_remembered(qtbot, preferences):
     qtbot.addWidget(second)
 
     assert second.settings_panel.save_options() == SaveOptions(quality=70, keep_gps=True)
-    assert second.settings_panel.is_save_options_expanded()
 
 
 def test_save_options_start_with_defaults(window):
     assert window.settings_panel.save_options() == SaveOptions()
-    assert not window.settings_panel.is_save_options_expanded()
 
 
 # --- 加工前との比較 -------------------------------------------------------------
@@ -2171,15 +2166,15 @@ def test_detail_updates_preview(loaded_window, qtbot):
     )
 
 
-def test_detail_expanded_is_remembered(qtbot, preferences):
+def test_last_tab_is_remembered(qtbot, preferences):
     first = MainWindow()
     qtbot.addWidget(first)
-    # 画像を開いていないとボタンは押せないので、状態を直接切り替える（押したときと同じ通知が出る）
-    first.settings_panel.detail_toggle.setChecked(True)
+    assert first.settings_panel.current_tab() == 0
+    first.settings_panel.tabs.setCurrentIndex(1)
 
     second = MainWindow()
     qtbot.addWidget(second)
-    assert second.settings_panel.is_detail_expanded()
+    assert second.settings_panel.current_tab() == 1
 
 
 def test_saved_image_has_detail(loaded_window, qtbot, tmp_path):

@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QPainter, QPaintEvent
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,10 +14,11 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QSizePolicy,
     QSlider,
     QSpinBox,
     QStyle,
+    QTabBar,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -84,6 +85,10 @@ FOLLOW_FRAME_TEXT = "フレーム・円に合わせる"
 FOLLOW_FRAME_DATA = "follow_frame"
 # 「加工」のスライダーの最小の長さ（細かく調整しやすいよう長めにする）
 SLIDER_MIN_WIDTH = 225
+# タブの名前
+TAB_ADJUST_TEXT = "加工"
+TAB_CROP_TEXT = "切り抜き"
+TAB_OUTPUT_TEXT = "出力"
 # パネルのグループ間の間隔と上下の余白（px）
 PANEL_SPACING = 4
 PANEL_MARGIN = 6
@@ -113,8 +118,7 @@ class SettingsPanel(QWidget):
     save_requested = pyqtSignal()
     reset_requested = pyqtSignal()
     save_options_changed = pyqtSignal(object)  # SaveOptions
-    save_options_expanded_changed = pyqtSignal(bool)  # 保存の設定を開いたか
-    detail_expanded_changed = pyqtSignal(bool)  # ディテールを開いたか
+    tab_changed = pyqtSignal(int)  # 開いたタブの番号
     compare_toggled = pyqtSignal(bool)  # 「加工前」ボタンを押している間だけ True
     preset_save_requested = pyqtSignal()  # 「今の加工を保存…」
     preset_delete_requested = pyqtSignal(str)  # 削除するプリセットの名前
@@ -190,9 +194,7 @@ class SettingsPanel(QWidget):
         )
         self.corner_slider.setPageStep(5)
         self.corner_value_label.setText(_percent_text(CORNER_RADIUS_DEFAULT))
-        filter_box = QGroupBox("加工")
-        filter_form = QFormLayout(filter_box)
-        # プリセット（テイストと同じ行に置いて、パネルを高くしない）
+        # プリセット・文字はテイストと同じ行に置く
         self.preset_menu = QMenu(self)
         self.preset_button = QToolButton()
         self.preset_button.setText("プリセット")
@@ -203,16 +205,15 @@ class SettingsPanel(QWidget):
         filter_row = QHBoxLayout()
         filter_row.addWidget(self.filter_combo, 1)
         filter_row.addWidget(self.preset_button)
-        # 文字・透かしは専用のダイアログで設定する（パネルを高くしない）
+        # 文字・透かしは専用のダイアログで設定する
         self.text_button = QToolButton()
         self.text_button.setText("文字…")
         self.text_button.setToolTip("文字・透かしを入れる（⌘T）")
         filter_row.addWidget(self.text_button)
         self._text = TextSettings()
+        filter_box = QGroupBox("加工")
+        filter_form = QFormLayout(filter_box)
         filter_form.addRow(filter_row)
-        filter_form.addRow("フレーム", self.frame_combo)
-        filter_form.addRow("形", self.shape_combo)
-        filter_form.addRow("角丸", corner_row)
         filter_form.addRow("露出", exposure_row)
         filter_form.addRow("明るさ", brightness_row)
         filter_form.addRow("コントラスト", contrast_row)
@@ -220,11 +221,8 @@ class SettingsPanel(QWidget):
         filter_form.addRow("彩度", saturation_row)
         filter_form.addRow("周辺減光", vignette_row)
         filter_form.addRow("経年劣化", aging_row)
-        # テイストと色のスライダーだけを戻す（フレーム・形・角丸は切り抜きに関わるので残す）
-        self.reset_adjustments_button = QPushButton("加工をリセット")
 
-        # ディテール（シャープ・ぼかし・ノイズ除去）。縦に場所を取らないよう見出しのクリックで
-        # 開閉し、見出しは「加工をリセット」と同じ行に置く（閉じていればパネルは高くならない）
+        # ディテール（シャープ・ぼかし・ノイズ除去）
         self.sharpen_slider, self.sharpen_value_label, sharpen_row = _amount_slider(
             DETAIL_MIN, DETAIL_MAX
         )
@@ -232,18 +230,20 @@ class SettingsPanel(QWidget):
         self.denoise_slider, self.denoise_value_label, denoise_row = _amount_slider(
             DETAIL_MIN, DETAIL_MAX
         )
-        self.detail_toggle = _section_toggle("ディテール")
-        self.detail_summary = ElidedLabel()
-        detail_header = QHBoxLayout()
-        detail_header.addWidget(self.detail_toggle, 0, Qt.AlignmentFlag.AlignLeft)
-        detail_header.addWidget(self.detail_summary, 1)
-        detail_header.addWidget(self.reset_adjustments_button)
-        filter_form.addRow(detail_header)
-        filter_form.addRow("シャープ", sharpen_row)
-        filter_form.addRow("ぼかし", blur_row)
-        filter_form.addRow("ノイズ除去", denoise_row)
-        self._filter_form = filter_form
-        self._detail_rows = (sharpen_row, blur_row, denoise_row)
+        detail_box = QGroupBox("ディテール")
+        detail_form = QFormLayout(detail_box)
+        detail_form.addRow("シャープ", sharpen_row)
+        detail_form.addRow("ぼかし", blur_row)
+        detail_form.addRow("ノイズ除去", denoise_row)
+        # テイスト・色・ディテールだけを戻す（フレーム・形・角丸は切り抜きに関わるので残す）
+        self.reset_adjustments_button = QPushButton("加工をリセット")
+
+        # フレーム・形
+        frame_box = QGroupBox("フレーム・形")
+        frame_form = QFormLayout(frame_box)
+        frame_form.addRow("フレーム", self.frame_combo)
+        frame_form.addRow("形", self.shape_combo)
+        frame_form.addRow("角丸", corner_row)
 
         # 回転・反転（表示中の向きに対して行う）
         self.rotate_left_button = QPushButton("左に回転")
@@ -297,29 +297,13 @@ class SettingsPanel(QWidget):
         self.keep_exif_check.setToolTip("撮影日時・カメラなど。JPEG・PNG・TIFF で保存するとき")
         self.keep_exif_check.setChecked(True)
         self.keep_gps_check = QCheckBox("位置情報 (GPS) も残す")
-        # 縦に場所を取らないよう、見出しのクリックで開閉できるようにする（既定は閉じる）
-        self.save_options_toggle = _section_toggle("保存の設定")
-        self.save_options_summary = ElidedLabel()
-        self.save_options_body = QWidget()
-        save_form = QFormLayout(self.save_options_body)
-        save_form.setContentsMargins(0, 0, 0, 0)
+        save_box = QGroupBox("保存の設定")
+        save_form = QFormLayout(save_box)
         save_form.addRow("JPEG 品質", quality_row)
-        # 横に並べるとフォントによってはパネルの幅を超えるので、縦に並べる
         save_form.addRow(self.keep_exif_check)
         save_form.addRow(self.keep_gps_check)
-        save_header = QHBoxLayout()
-        # 要約は残りの幅を使い、開いて要約を隠しても見出しは左に寄せる
-        save_header.addWidget(self.save_options_toggle, 0, Qt.AlignmentFlag.AlignLeft)
-        save_header.addWidget(self.save_options_summary, 1)
-        save_box = QWidget()
-        save_layout = QVBoxLayout(save_box)
-        save_layout.setContentsMargins(0, 0, 0, 0)
-        save_layout.addLayout(save_header)
-        save_layout.addWidget(self.save_options_body)
-        self.set_save_options_expanded(False)
-        self.set_detail_expanded(False)
 
-        # ボタン（プレビューは設定の変更に合わせて自動で更新するので、更新ボタンは置かない）
+        # ボタン（どのタブでも出す。プレビューは設定の変更に合わせて自動で更新する）
         self.save_button = QPushButton("保存")
         self.reset_button = QPushButton("リセット")
         # 押している間だけ加工前の画像を表示する（\ キーでも同じ）
@@ -330,13 +314,14 @@ class SettingsPanel(QWidget):
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.reset_button)
 
-        # 保存の設定は保存ボタンのすぐ上に置き、まとめて下端にそろえる
-        bottom = QVBoxLayout()
-        bottom.setSpacing(PANEL_SPACING)
-        bottom.addWidget(save_box)
-        bottom.addLayout(buttons)
+        # タブ: 加工／切り抜き／出力
+        self.tabs = QTabWidget()
+        self.tabs.addTab(
+            _page(filter_box, detail_box, self.reset_adjustments_button), TAB_ADJUST_TEXT
+        )
+        self.tabs.addTab(_page(frame_box, orient_box, crop_box), TAB_CROP_TEXT)
+        self.tabs.addTab(_page(size_box, save_box), TAB_OUTPUT_TEXT)
 
-        # 高さ 900px 程度のウィンドウでもスクロールせずに収まるよう、間隔を少し詰める
         layout = QVBoxLayout(self)
         layout.setSpacing(PANEL_SPACING)
         # 左右はスタイルの既定値のまま（組み立て中に contentsMargins() を読むと、スタイルが
@@ -345,12 +330,8 @@ class SettingsPanel(QWidget):
         left = style.pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin) if style else 9
         right = style.pixelMetric(QStyle.PixelMetric.PM_LayoutRightMargin) if style else 9
         layout.setContentsMargins(left, PANEL_MARGIN, right, PANEL_MARGIN)
-        layout.addWidget(size_box)
-        layout.addWidget(filter_box)
-        layout.addWidget(orient_box)
-        layout.addWidget(crop_box)
-        layout.addStretch(1)
-        layout.addLayout(bottom)
+        layout.addWidget(self.tabs, 1)
+        layout.addLayout(buttons)
 
         self.width_spin.valueChanged.connect(lambda _: self._on_size_edited("width"))
         self.height_spin.valueChanged.connect(lambda _: self._on_size_edited("height"))
@@ -377,8 +358,7 @@ class SettingsPanel(QWidget):
         self.reset_adjustments_button.clicked.connect(self.reset_adjustments)
         for button, op in zip(self._orient_buttons(), OrientOp, strict=True):
             button.clicked.connect(lambda _, op=op: self.apply_orientation(op))
-        self.save_options_toggle.toggled.connect(self._on_save_options_toggled)
-        self.detail_toggle.toggled.connect(self._on_detail_toggled)
+        self.tabs.currentChanged.connect(self.tab_changed)
         for slider, label in (
             (self.sharpen_slider, self.sharpen_value_label),
             (self.blur_slider, self.blur_value_label),
@@ -741,27 +721,16 @@ class SettingsPanel(QWidget):
             self.quality_value_label.setText(str(quality))
             self.keep_exif_check.setChecked(options.keep_exif)
             self.keep_gps_check.setChecked(options.keep_gps)
-        self._update_save_options_view()
         self._update_gps_enabled()
 
-    def is_detail_expanded(self) -> bool:
-        """ディテールを開いているかを返す。"""
-        return self.detail_toggle.isChecked()
+    def current_tab(self) -> int:
+        """開いているタブの番号（0: 加工、1: 切り抜き、2: 出力）を返す。"""
+        return self.tabs.currentIndex()
 
-    def set_detail_expanded(self, expanded: bool) -> None:
-        """ディテールを開く・閉じる（閉じているときは要約を 1 行で表示する）。"""
-        with self._block():
-            self.detail_toggle.setChecked(expanded)
-        self._update_detail_view()
-
-    def is_save_options_expanded(self) -> bool:
-        """保存の設定を開いているかを返す。"""
-        return self.save_options_toggle.isChecked()
-
-    def set_save_options_expanded(self, expanded: bool) -> None:
-        """保存の設定を開く・閉じる（閉じているときは要約を 1 行で表示する）。"""
-        self.save_options_toggle.setChecked(expanded)
-        self._update_save_options_view()
+    def set_current_tab(self, index: int) -> None:
+        """タブを開く（範囲外の番号は無視する）。"""
+        if 0 <= index < self.tabs.count():
+            self.tabs.setCurrentIndex(index)
 
     def set_busy(self, busy: bool) -> None:
         """処理中はボタンを無効化する。"""
@@ -942,44 +911,9 @@ class SettingsPanel(QWidget):
 
     def _on_detail_changed(self, label: QLabel, value: int) -> None:
         label.setText(str(value))
-        self._update_detail_view()
         self._emit_changed()
 
-    def _on_detail_toggled(self, _expanded: bool) -> None:
-        self._update_detail_view()
-        if not self._updating:
-            self.detail_expanded_changed.emit(self.is_detail_expanded())
-
-    def _update_detail_view(self) -> None:
-        expanded = self.is_detail_expanded()
-        self.detail_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-        )
-        for row in self._detail_rows:
-            self._filter_form.setRowVisible(row, expanded)
-        summary = _detail_text(
-            self.sharpen_slider.value(), self.blur_slider.value(), self.denoise_slider.value()
-        )
-        self.detail_summary.setText(summary)
-        self.detail_summary.setToolTip(summary)
-
-    def _on_save_options_toggled(self, _expanded: bool) -> None:
-        self._update_save_options_view()
-        self.save_options_expanded_changed.emit(self.is_save_options_expanded())
-
-    def _update_save_options_view(self) -> None:
-        expanded = self.is_save_options_expanded()
-        self.save_options_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-        )
-        self.save_options_body.setVisible(expanded)
-        self.save_options_summary.setVisible(not expanded)
-        summary = _save_options_text(self.save_options())
-        self.save_options_summary.setText(summary)
-        self.save_options_summary.setToolTip(summary)
-
     def _on_save_options_changed(self) -> None:
-        self._update_save_options_view()
         self._update_gps_enabled()
         if not self._updating:
             self.save_options_changed.emit(self.save_options())
@@ -1096,8 +1030,9 @@ class SettingsPanel(QWidget):
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in self.findChildren(QWidget):
             # メニューは開くボタンの有効・無効で決まるので触らない（QMenu を有効にすると、
-            # 項目ごとに決めたサブメニューの有効・無効が上書きされてしまう）
-            if not isinstance(widget, QMenu):
+            # 項目ごとに決めたサブメニューの有効・無効が上書きされてしまう）。タブは画像が
+            # なくても切り替えられるようにする
+            if not isinstance(widget, QMenu | QTabWidget | QTabBar):
                 widget.setEnabled(enabled)
 
     def _emit_changed(self) -> None:
@@ -1134,39 +1069,17 @@ def _signed_text(value: int) -> str:
     return f"{value:+d}" if value else "0"
 
 
-def _section_toggle(text: str) -> QToolButton:
-    """たためる項目の見出し（▶／▼ と文字）。文字 1 行ぶんの高さにして、パネルの高さを抑える。"""
-    toggle = QToolButton()
-    toggle.setText(text)
-    toggle.setCheckable(True)
-    toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    toggle.setAutoRaise(True)
-    line_height = toggle.fontMetrics().height()
-    toggle.setFixedHeight(line_height + 6)
-    toggle.setIconSize(QSize(line_height // 2, line_height // 2))
-    toggle.setArrowType(Qt.ArrowType.RightArrow)
-    return toggle
-
-
-def _detail_text(sharpen: int, blur: int, denoise: int) -> str:
-    """ディテールの要約（例:「シャープ 20・ノイズ除去 10」。どれも 0 なら「なし」）。"""
-    parts = [
-        f"{name} {value}"
-        for name, value in (("シャープ", sharpen), ("ぼかし", blur), ("ノイズ除去", denoise))
-        if value
-    ]
-    return "・".join(parts) if parts else "なし"
-
-
-def _save_options_text(options: SaveOptions) -> str:
-    """保存の設定の要約（例:「JPEG 90 ／ EXIF あり（位置情報なし）」）。"""
-    if not options.keep_exif:
-        exif = "EXIF なし"
-    elif options.keep_gps:
-        exif = "EXIF あり（位置情報あり）"
-    else:
-        exif = "EXIF あり（位置情報なし）"
-    return f"JPEG {options.quality} ／ {exif}"
+def _page(*widgets: QWidget) -> QWidget:
+    """タブの中身（部品を上から並べ、余りは下に空ける）を作る。"""
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(PANEL_SPACING)
+    # タブの枠の内側にさらに余白を足すとパネルの最小幅が広がるので、左右は詰める
+    layout.setContentsMargins(0, PANEL_MARGIN, 0, 0)
+    for widget in widgets:
+        layout.addWidget(widget)
+    layout.addStretch(1)
+    return page
 
 
 def _percent_text(value: int) -> str:
@@ -1175,27 +1088,6 @@ def _percent_text(value: int) -> str:
 
 def _kelvin_text(kelvin: int) -> str:
     return f"{kelvin} K"
-
-
-class ElidedLabel(QLabel):
-    """幅が足りないときは末尾を「…」で省略して 1 行で表示するラベル。
-
-    文字の長さでパネルの最小幅が広がらないよう、最小幅を持たない。
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-
-    def minimumSizeHint(self) -> QSize:
-        return QSize(0, super().minimumSizeHint().height())
-
-    def paintEvent(self, event: QPaintEvent | None) -> None:
-        painter = QPainter(self)
-        rect = self.contentsRect()
-        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
-        painter.drawText(rect, int(self.alignment()), text)
-        painter.end()
 
 
 class ResettableSlider(QSlider):

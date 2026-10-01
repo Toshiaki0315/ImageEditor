@@ -100,8 +100,7 @@ ZOOM_RENDERING_TEXT = "更新中…"
 PREF_JPEG_QUALITY = "save/jpeg_quality"
 PREF_KEEP_EXIF = "save/keep_exif"
 PREF_KEEP_GPS = "save/keep_gps"
-PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
-PREF_DETAIL_EXPANDED = "panel/detail_expanded"  # 設定パネルの「ディテール」を開いているか
+PREF_PANEL_TAB = "panel/tab"  # 設定パネルで最後に開いていたタブ
 PREF_SHOW_HISTOGRAM = "view/histogram"  # プレビューにヒストグラムを重ねるか
 
 
@@ -220,17 +219,12 @@ class MainWindow(QMainWindow):
         self.settings_panel.save_options_changed.connect(
             lambda options: store_save_options(self._preferences, options)
         )
-        self.settings_panel.set_save_options_expanded(
-            bool(self._preferences.value(PREF_SAVE_OPTIONS_EXPANDED, False, type=bool))
+        # 最後に開いていたタブを次に起動したときも開く
+        self.settings_panel.set_current_tab(
+            int(self._preferences.value(PREF_PANEL_TAB, 0, type=int))
         )
-        self.settings_panel.save_options_expanded_changed.connect(
-            lambda expanded: self._preferences.setValue(PREF_SAVE_OPTIONS_EXPANDED, expanded)
-        )
-        self.settings_panel.set_detail_expanded(
-            bool(self._preferences.value(PREF_DETAIL_EXPANDED, False, type=bool))
-        )
-        self.settings_panel.detail_expanded_changed.connect(
-            lambda expanded: self._preferences.setValue(PREF_DETAIL_EXPANDED, expanded)
+        self.settings_panel.tab_changed.connect(
+            lambda index: self._preferences.setValue(PREF_PANEL_TAB, index)
         )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
         # 文字・透かしのダイアログ（開いたまま調整でき、変更はすぐ設定に反映する）
