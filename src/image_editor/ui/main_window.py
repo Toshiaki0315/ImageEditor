@@ -1,5 +1,6 @@
 """メインウィンドウ。"""
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
@@ -155,17 +156,13 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self._save_task: SaveTask | None = None
         self._saving_settings: EditSettings | None = None
         self._thread_pool = QThreadPool.globalInstance()
-        self._auto_preview_timer = QTimer(self)
-        self._auto_preview_timer.setSingleShot(True)
-        self._auto_preview_timer.setInterval(AUTO_PREVIEW_DELAY_MS)
-        self._auto_preview_timer.timeout.connect(self._auto_preview)
+        self._auto_preview_timer = self._single_shot_timer(
+            AUTO_PREVIEW_DELAY_MS, self._auto_preview
+        )
         # アンドゥ／リドゥの履歴（設定パネルの状態のスナップショット）
         self._history: History[PanelState] = History(PanelState(EditSettings()))
         self._restoring = False
-        self._history_timer = QTimer(self)
-        self._history_timer.setSingleShot(True)
-        self._history_timer.setInterval(HISTORY_DELAY_MS)
-        self._history_timer.timeout.connect(self._commit_history)
+        self._history_timer = self._single_shot_timer(HISTORY_DELAY_MS, self._commit_history)
         # 加工前の画像を表示中か（\ キーか「加工前」ボタンを押している間）
         self._comparing = False
         # 100% 表示: 表示中か、最新の依頼の番号、最新の依頼を処理中か、表示の中央にしたい点
@@ -175,10 +172,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         # 実行中のタスクはすべて終わるまで保持する（実行中に Python 側で片付けられると落ちる）
         self._zoom_tasks: set[ZoomTask] = set()
         self._zoom_center: tuple[float, float] | None = None
-        self._zoom_timer = QTimer(self)
-        self._zoom_timer.setSingleShot(True)
-        self._zoom_timer.setInterval(AUTO_PREVIEW_DELAY_MS)
-        self._zoom_timer.timeout.connect(self._render_zoom)
+        self._zoom_timer = self._single_shot_timer(AUTO_PREVIEW_DELAY_MS, self._render_zoom)
         # 表示中のプレビューのヒストグラム（保存される写真の分布）
         self._histogram: Histogram | None = None
 
@@ -250,6 +244,14 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self.status_label = QLabel(NO_IMAGE_MESSAGE)
         self.statusBar().addWidget(self.status_label, 1)
         self._update_actions()
+
+    def _single_shot_timer(self, interval_ms: int, slot: Callable[[], object]) -> QTimer:
+        """start() のたびに数え直し、interval_ms 後に 1 回だけ slot を呼ぶタイマーを作る。"""
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(interval_ms)
+        timer.timeout.connect(slot)
+        return timer
 
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("ファイル")
@@ -377,7 +379,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
             notes.append(f"{len(paths)} 件中、先頭の 1 枚のみ読み込みました")
         self.load_file(paths[0], notes)
 
-    # --- プレビュー・保存・リセット -----------------------------------------
+    # --- プレビュー ---------------------------------------------------------------
 
     def update_preview(self) -> None:
         """縮小版の画像にフィルターの色と周辺減光を適用してプレビューに表示する。
@@ -406,9 +408,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self._histogram = histogram
         self._show_histogram()
 
-    # --- 加工前との比較 ------------------------------------------------------
-
-    # --- 100% 表示 ---------------------------------------------------------------
+    # --- 保存・リセット -----------------------------------------------------------
 
     def save_file_dialog(self) -> None:
         """保存ダイアログを開き、原寸で処理して書き出す。"""
@@ -472,8 +472,6 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self._thread_pool.start(task)
         return True
 
-    # --- 一括処理 ---------------------------------------------------------------
-
     def is_busy(self) -> bool:
         """保存か一括処理の実行中かを返す。"""
         return self.is_saving() or self.is_batch_running()
@@ -522,10 +520,6 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self._reset_history()
         self._update_status()
         self._update_actions()
-
-    # --- アンドゥ／リドゥ -----------------------------------------------------
-
-    # --- プリセット -----------------------------------------------------------
 
     def has_unsaved_changes(self) -> bool:
         """初期状態から設定を変えていて、その設定でまだ保存していなければ True。"""
@@ -616,14 +610,26 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
     def _confirm_discard(self) -> bool:
         if not self.has_unsaved_changes():
             return True
+        return self._confirm("未保存の変更", DISCARD_QUESTION, QMessageBox.StandardButton.Discard)
+
+    def _confirm(
+        self,
+        title: str,
+        question: str,
+        accept: QMessageBox.StandardButton = QMessageBox.StandardButton.Yes,
+    ) -> bool:
+        """accept と「キャンセル」の確認ダイアログを出し、accept が押されたら True。
+
+        既定のボタンは「キャンセル」（Return で誤って進まないように）。
+        """
         answer = QMessageBox.question(
             self,
-            "未保存の変更",
-            DISCARD_QUESTION,
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            title,
+            question,
+            accept | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        return answer == QMessageBox.StandardButton.Discard
+        return answer == accept
 
     def _update_status(self, extra: str | None = None) -> None:
         """ステータスバーにファイル名・原寸・出力予定サイズを表示する。"""

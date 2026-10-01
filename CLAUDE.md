@@ -37,6 +37,7 @@ src/image_editor/
   core/                  # ★ Qt に依存しない純粋な画像処理層
     io.py                # 読み込み・保存・モード変換・EXIF 回転補正・EXIF の保持・保存先の名前
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
+    tone.py              # filters・effects に共通の部品（LUT・トーンカーブ・アルファの扱い・粒子）
     effects.py           # 露出・明るさ・コントラスト・色温度・彩度・ディテール（シャープ・ぼかし・ノイズ除去）・周辺減光・経年劣化
     transform.py         # 回転・反転・リサイズ・トリミング・縦横比
     shapes.py            # 形（角丸・円）の切り抜き
