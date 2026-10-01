@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QPainter, QPaintEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -28,6 +29,36 @@ from image_editor.core.transform import MAX_SIZE, MIN_SIZE
 
 CURRENT_LOOK_TEXT = "今の加工"
 NO_OUTPUT_TEXT = "（まだ選んでいません）"
+ELIDED_LABEL_MIN_WIDTH = 80
+
+
+class ElidedLabel(QLabel):
+    """入りきらない文字を途中で「…」に省略して表示するラベル（text() は全体のまま）。
+
+    長いパスでもダイアログの幅を広げない。
+    """
+
+    def sizeHint(self) -> QSize:
+        """幅は文字の長さに合わせて広げない。"""
+        return QSize(ELIDED_LABEL_MIN_WIDTH, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        """幅は文字の長さに合わせて広げない。"""
+        return self.sizeHint()
+
+    def displayed_text(self) -> str:
+        """今の幅で実際に表示する（省略した）文字。"""
+        rect = self.contentsRect()
+        return self.fontMetrics().elidedText(
+            self.text(), Qt.TextElideMode.ElideMiddle, rect.width()
+        )
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        painter = QPainter(self)
+        align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        painter.drawText(self.contentsRect(), align, self.displayed_text())
+
+
 NOTE_TEXT = (
     "トリミング範囲と回転・反転はかけません（フレーム・円のときは各画像の中央をその比で"
     "切り抜きます）。元と同じ名前・形式で保存し、同じ名前があれば _edited を付けて"
@@ -82,8 +113,7 @@ class BatchDialog(QDialog):
         resize_row.addWidget(QLabel("にする"))
         resize_row.addStretch(1)
 
-        self.out_dir_label = QLabel(NO_OUTPUT_TEXT)
-        self.out_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.out_dir_label = ElidedLabel(NO_OUTPUT_TEXT)
         self.choose_out_dir_button = QPushButton("選ぶ…")
         out_row = QHBoxLayout()
         out_row.addWidget(self.out_dir_label, 1)
