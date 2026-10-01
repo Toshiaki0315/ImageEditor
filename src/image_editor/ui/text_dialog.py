@@ -27,6 +27,7 @@ from image_editor.core.text import (
     TextSettings,
 )
 
+DIALOG_WIDTH = 420
 NOTE_TEXT = (
     "大きさは写真の短辺に対する % です。「フレームの余白」はポラロイド・チェキの広い余白に"
     "入れます（フレームがなければ写真の下中央）。フレームの余白の文字は「トリミング実行」の"
@@ -95,7 +96,9 @@ class TextDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(note)
         layout.addLayout(buttons)
-        self.resize(420, 0)
+        # 折り返す説明文の分まで含めた高さで開く（最小の高さでは行が詰まり、
+        # フォント欄が文字の入力欄に重なる）
+        self.resize(DIALOG_WIDTH, layout.heightForWidth(DIALOG_WIDTH))
 
         self.text_edit.textChanged.connect(self._emit)
         self.font_combo.currentIndexChanged.connect(lambda _: self._emit())
