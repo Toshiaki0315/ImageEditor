@@ -5,7 +5,8 @@ from PIL import Image
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
-from image_editor.ui.drop_area import DropArea
+from image_editor.core.diorama import DioramaSettings, diorama_band
+from image_editor.ui.drop_area import DioramaGuide, DropArea
 
 
 @pytest.fixture
@@ -375,3 +376,48 @@ def test_accepts_heic(qtbot, tmp_path):
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(tmp_path / "IMG_0001.HEIC"))])
     assert _accepts(mime)
+
+
+# --- ジオラマのガイド ---------------------------------------------------------------
+
+
+def make_guide(horizontal: bool = True) -> DioramaGuide:
+    band = diorama_band(DioramaSettings(position=50, width=20))
+    return DioramaGuide(area=(0.0, 0.5, 1.0, 0.5), horizontal=horizontal, band=band)
+
+
+def test_guide_lines_are_relative_to_photo_area():
+    lines = make_guide().lines()
+    # 写真は下半分 (0.5〜1.0)。帯は写真の 40〜60% → 画像の 0.7〜0.8
+    assert [solid for _, solid in lines] == [False, True, True, False]
+    assert [f for f, solid in lines if solid] == pytest.approx([0.7, 0.8])
+
+
+def test_set_and_clear_guide(area):
+    area.set_image(Image.new("RGB", (300, 200), (40, 40, 40)))
+    assert area.diorama_guide() is None
+
+    guide = make_guide()
+    area.set_diorama_guide(guide)
+    assert area.diorama_guide() == guide
+
+    # 帯の端（画像の 70% の高さ）に、ガイドの色の線が描かれる
+    rect = area.image_rect()
+    y = round(rect.y() + 0.7 * rect.height())
+    x = round(rect.center().x())
+    pixels = area.grab().toImage()
+    ratio = pixels.devicePixelRatio()
+    colors = {
+        pixels.pixelColor(round(x * ratio), round((y + dy) * ratio)).getRgb()[:3]
+        for dy in (-1, 0, 1)
+    }
+    assert any(r > 200 and g > 150 and b < 100 for r, g, b in colors)
+
+    area.set_diorama_guide(None)
+    assert area.diorama_guide() is None
+
+
+def test_guide_does_not_block_mouse(area):
+    area.set_image(Image.new("RGB", (300, 200)))
+    area.set_diorama_guide(make_guide(horizontal=False))
+    assert area._guide_view.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

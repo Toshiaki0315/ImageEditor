@@ -38,6 +38,7 @@ src/image_editor/
     io.py                # 読み込み・保存・モード変換・EXIF 回転補正・EXIF の保持・保存先の名前
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
     tone.py              # filters・effects に共通の部品（LUT・トーンカーブ・アルファの扱い・粒子）
+    diorama.py           # ジオラマ風（ミニチュア風・ティルトシフト）の加工
     effects.py           # 露出・明るさ・コントラスト・色温度・彩度・ディテール（シャープ・ぼかし・ノイズ除去）・周辺減光・経年劣化
     transform.py         # 回転・反転・リサイズ・トリミング・縦横比
     shapes.py            # 形（角丸・円）の切り抜き
@@ -54,8 +55,8 @@ src/image_editor/
     window_batch.py      #   BatchMixin: まとめて処理
     window_presets.py    #   PresetMixin: プリセット・文字・透かしのダイアログ
     window_history.py    #   HistoryMixin: アンドゥ／リドゥ
-    drop_area.py         # D&D + プレビュー表示
-    settings_panel.py    # 設定パネル（タブ: 加工／切り抜き／出力）。役割ごとに Mixin を混ぜる
+    drop_area.py         # D&D + プレビュー表示（ジオラマのピントの帯のガイドも重ねる）
+    settings_panel.py    # 設定パネル（タブ: 加工／切り抜き／出力／ジオラマ）。役割ごとに Mixin を混ぜる
     panel_crop.py        #   CropMixin: トリミング・縦横比・回転・反転
     panel_state.py       #   StateMixin: 状態の取り出し・戻し・プリセット・文字・加工のリセット
     panel_parts.py       #   定数・スライダーなどの部品・PanelState
@@ -75,7 +76,7 @@ tests/
 
 1. **core は Qt を import しない。** 画像処理はすべて `core/` の純粋関数で行い、UI からは `apply_edits(image, settings)` を呼ぶだけにする。
 2. **元画像は不変。** 読み込んだ原本 (`PIL.Image`) は保持し、プレビュー・保存のたびに原本から処理し直す。フィルターの重ね掛けをしない。
-3. **処理順は固定:** EXIF 回転補正 → 回転・反転 → トリミング → リサイズ → フィルター → 形 → 文字 → フレーム（詳細は `docs/requirements.md` §5.1）。
+3. **処理順は固定:** EXIF 回転補正 → 回転・反転 → トリミング → リサイズ → ジオラマ → フィルター → 形 → 文字 → フレーム（詳細は `docs/requirements.md` §5.1）。
 4. **プレビューは縮小版で処理する。** 長辺 1600px 程度に縮小した画像に設定を適用して表示し、保存時のみ原寸で処理する。トリミング座標は常に**回転・反転した後の原寸画像の座標系**で保持し、プレビュー表示時に換算する。
 5. **重い処理は UI スレッドで行わない。** 原寸処理・保存は `QThreadPool` / `QRunnable` 等で実行し、完了をシグナルで UI に返す。
 6. 型ヒントを付ける。公開関数には日本語で短い docstring を書く。

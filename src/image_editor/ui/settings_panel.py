@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QMenu,
     QPushButton,
     QStyle,
@@ -19,6 +20,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from image_editor.core.diorama import (
+    DIORAMA_BLUR_MAX,
+    DIORAMA_BLUR_MIN,
+    DIORAMA_POSITION_DEFAULT,
+    DIORAMA_POSITION_MAX,
+    DIORAMA_POSITION_MIN,
+    DIORAMA_VIVID_DEFAULT,
+    DIORAMA_VIVID_MAX,
+    DIORAMA_VIVID_MIN,
+    DIORAMA_WIDTH_DEFAULT,
+    DIORAMA_WIDTH_MAX,
+    DIORAMA_WIDTH_MIN,
+    DioramaDirection,
+)
 from image_editor.core.effects import (
     AGING_MAX,
     AGING_MIN,
@@ -69,6 +84,7 @@ from image_editor.core.transform import (
 from image_editor.ui.panel_crop import CropMixin
 from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外からも使う
     BLANK_TEXT,
+    DIORAMA_NOTE_TEXT,
     EDIT_RANGE_TEXT,
     FOLLOW_FRAME_DATA,
     FOLLOW_FRAME_TEXT,
@@ -77,6 +93,7 @@ from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外か�
     SLIDER_MIN_WIDTH,
     TAB_ADJUST_TEXT,
     TAB_CROP_TEXT,
+    TAB_DIORAMA_TEXT,
     TAB_OUTPUT_TEXT,
     TRIM_TEXT,
     Adjustment,
@@ -198,7 +215,35 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             blur,
             denoise,
         )
-        self._adjustments = (*self._color_adjustments, corner)
+        # ジオラマ（ぼかし 0 = なし）。位置・幅は写真の高さ・幅に対する %
+        diorama_blur, diorama_blur_row = adjustment(
+            "diorama_blur", DIORAMA_BLUR_MIN, DIORAMA_BLUR_MAX
+        )
+        diorama_position, diorama_position_row = adjustment(
+            "diorama_position",
+            DIORAMA_POSITION_MIN,
+            DIORAMA_POSITION_MAX,
+            default=DIORAMA_POSITION_DEFAULT,
+            text=percent_text,
+        )
+        diorama_width, diorama_width_row = adjustment(
+            "diorama_width",
+            DIORAMA_WIDTH_MIN,
+            DIORAMA_WIDTH_MAX,
+            default=DIORAMA_WIDTH_DEFAULT,
+            text=percent_text,
+        )
+        diorama_vivid, diorama_vivid_row = adjustment(
+            "diorama_vivid", DIORAMA_VIVID_MIN, DIORAMA_VIVID_MAX, default=DIORAMA_VIVID_DEFAULT
+        )
+        self._adjustments = (
+            *self._color_adjustments,
+            corner,
+            diorama_blur,
+            diorama_position,
+            diorama_width,
+            diorama_vivid,
+        )
         self._adjustment_by_field = {item.field: item for item in self._adjustments}
         self.exposure_slider, self.exposure_value_label = exposure.slider, exposure.label
         self.brightness_slider, self.brightness_value_label = brightness.slider, brightness.label
@@ -212,6 +257,17 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         self.blur_slider, self.blur_value_label = blur.slider, blur.label
         self.denoise_slider, self.denoise_value_label = denoise.slider, denoise.label
         self.corner_slider, self.corner_value_label = corner.slider, corner.label
+        self.diorama_blur_slider = diorama_blur.slider
+        self.diorama_blur_value_label = diorama_blur.label
+        self.diorama_position_slider = diorama_position.slider
+        self.diorama_position_value_label = diorama_position.label
+        self.diorama_width_slider = diorama_width.slider
+        self.diorama_width_value_label = diorama_width.label
+        self.diorama_vivid_slider = diorama_vivid.slider
+        self.diorama_vivid_value_label = diorama_vivid.label
+        self.diorama_direction_combo = QComboBox()
+        for direction in DioramaDirection:
+            self.diorama_direction_combo.addItem(direction.label, direction)
 
         self.frame_combo = QComboBox()
         for frame_type in FrameType:
@@ -339,6 +395,19 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         )
         self.tabs.addTab(tab_page(frame_box, orient_box, crop_box), TAB_CROP_TEXT)
         self.tabs.addTab(tab_page(size_box, save_box), TAB_OUTPUT_TEXT)
+        # ジオラマ（ミニチュア風）。開いている間はプレビューにピントの帯のガイドを出す
+        diorama_box = QGroupBox("ジオラマ（ミニチュア風）")
+        diorama_form = QFormLayout(diorama_box)
+        diorama_form.addRow("ぼかし", diorama_blur_row)
+        diorama_form.addRow("帯の向き", self.diorama_direction_combo)
+        diorama_form.addRow("ピントの位置", diorama_position_row)
+        diorama_form.addRow("ピントの幅", diorama_width_row)
+        diorama_form.addRow("鮮やかさ", diorama_vivid_row)
+        diorama_note = QLabel(DIORAMA_NOTE_TEXT)
+        diorama_note.setWordWrap(True)
+        diorama_form.addRow(diorama_note)
+        self._diorama_page = tab_page(diorama_box)
+        self.tabs.addTab(self._diorama_page, TAB_DIORAMA_TEXT)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(PANEL_SPACING)
@@ -359,6 +428,7 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         self.frame_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
         # 円は正方形に切り抜くので、形もトリミングと同じく扱う
         self.shape_combo.currentIndexChanged.connect(lambda _: self._on_shape_changed())
+        self.diorama_direction_combo.currentIndexChanged.connect(lambda _: self._emit_changed())
         for name, spin in zip(("x", "y", "width", "height"), self._crop_spins(), strict=True):
             spin.valueChanged.connect(lambda _, name=name: self._on_crop_spin_edited(name))
         self.aspect_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
@@ -404,10 +474,10 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             self.aspect_combo.setCurrentIndex(0)
             self.portrait_check.setChecked(False)
             self.shape_combo.setCurrentIndex(0)
-            self.corner_slider.reset()
+            self.diorama_direction_combo.setCurrentIndex(0)
             self._text = TextSettings()
-            for slider in self._adjustment_sliders():
-                slider.reset()
+            for item in self._adjustments:
+                item.slider.reset()
             self.trim_button.setChecked(False)
             if size is None:
                 self._set_size_spins((0, 0))  # 空欄表示
@@ -446,6 +516,7 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             frame=self.frame(),
             shape=self.shape(),
             text=self._text,
+            diorama_direction=self.diorama_direction_combo.currentData(),
             **{item.field: item.value() for item in self._adjustments},
         )
 
@@ -485,6 +556,10 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             self.keep_exif_check.setChecked(options.keep_exif)
             self.keep_gps_check.setChecked(options.keep_gps)
         self._update_gps_enabled()
+
+    def is_diorama_tab(self) -> bool:
+        """「ジオラマ」タブを開いているか（プレビューにピントの帯のガイドを出す）。"""
+        return self.tabs.currentWidget() is self._diorama_page
 
     def current_tab(self) -> int:
         """開いているタブの番号（0: 加工、1: 切り抜き、2: 出力）を返す。"""

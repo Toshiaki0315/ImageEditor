@@ -1,6 +1,7 @@
 import pytest
 from PyQt6.QtCore import Qt
 
+from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import SaveOptions
@@ -1426,8 +1427,11 @@ def tab_of(panel: SettingsPanel, widget) -> int:
 
 def test_tabs(panel):
     names = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-    assert names == ["加工", "切り抜き", "出力"]
+    assert names == ["加工", "切り抜き", "出力", "ジオラマ"]
     assert panel.current_tab() == 0
+    assert not panel.is_diorama_tab()
+    panel.set_current_tab(3)
+    assert panel.is_diorama_tab()
 
 
 @pytest.mark.parametrize(
@@ -1452,6 +1456,11 @@ def test_tabs(panel):
         ("keep_aspect_check", 2),
         ("quality_slider", 2),
         ("keep_gps_check", 2),
+        ("diorama_blur_slider", 3),
+        ("diorama_direction_combo", 3),
+        ("diorama_position_slider", 3),
+        ("diorama_width_slider", 3),
+        ("diorama_vivid_slider", 3),
     ],
 )
 def test_widgets_are_in_tabs(panel, name, tab):
@@ -1479,3 +1488,83 @@ def test_tabs_work_without_image(qtbot):
     assert widget.tabs.isEnabled()
     assert widget.tabs.tabBar().isEnabled()
     assert not widget.exposure_slider.isEnabled()
+
+
+# --- ジオラマ ---------------------------------------------------------------------
+
+
+def test_diorama_defaults(panel):
+    settings = panel.settings()
+    assert settings.diorama_blur == 0
+    assert settings.diorama_direction is DioramaDirection.HORIZONTAL
+    assert (settings.diorama_position, settings.diorama_width) == (50, 20)
+    assert settings.diorama_vivid == 30
+    assert panel.diorama_position_value_label.text() == "50%"
+    assert panel.diorama_width_value_label.text() == "20%"
+    assert panel.diorama_vivid_value_label.text() == "30"
+
+
+def test_diorama_controls_emit_settings(panel, qtbot):
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        panel.diorama_blur_slider.setValue(70)
+    assert blocker.args[0].diorama_blur == 70
+    assert panel.diorama_blur_value_label.text() == "70"
+
+    combo = panel.diorama_direction_combo
+    with qtbot.waitSignal(panel.settings_changed) as blocker:
+        combo.setCurrentIndex(combo.findData(DioramaDirection.VERTICAL))
+    assert blocker.args[0].diorama_direction is DioramaDirection.VERTICAL
+
+    panel.diorama_position_slider.setValue(35)
+    panel.diorama_width_slider.setValue(12)
+    panel.diorama_vivid_slider.setValue(0)
+    settings = panel.settings()
+    assert (settings.diorama_position, settings.diorama_width, settings.diorama_vivid) == (
+        35,
+        12,
+        0,
+    )
+    assert panel.diorama_position_value_label.text() == "35%"
+
+
+def test_diorama_reset_on_new_image_but_not_by_reset_adjustments(panel):
+    panel.diorama_blur_slider.setValue(70)
+    combo = panel.diorama_direction_combo
+    combo.setCurrentIndex(combo.findData(DioramaDirection.VERTICAL))
+
+    panel.reset_adjustments()  # 「加工をリセット」は加工タブの分だけ
+    assert panel.settings().diorama_blur == 70
+
+    panel.set_image_size((200, 100))
+    settings = panel.settings()
+    assert settings.diorama_blur == 0
+    assert settings.diorama_direction is DioramaDirection.HORIZONTAL
+
+
+def test_diorama_restore_and_preset(panel):
+    panel.diorama_blur_slider.setValue(40)
+    combo = panel.diorama_direction_combo
+    combo.setCurrentIndex(combo.findData(DioramaDirection.VERTICAL))
+    state = panel.snapshot()
+
+    panel.set_image_size((400, 300))
+    panel.restore(state)
+    assert panel.settings().diorama_blur == 40
+    assert panel.settings().diorama_direction is DioramaDirection.VERTICAL
+
+    preset = Preset(name="ミニチュア", diorama_blur=90, diorama_position=20, diorama_vivid=60)
+    panel.apply_preset(preset)
+    settings = panel.settings()
+    assert (settings.diorama_blur, settings.diorama_position, settings.diorama_vivid) == (
+        90,
+        20,
+        60,
+    )
+    assert settings.diorama_direction is DioramaDirection.HORIZONTAL
+
+
+def test_diorama_drag_counts_as_adjusting(panel):
+    panel.diorama_width_slider.setSliderDown(True)
+    assert panel.is_adjusting()
+    panel.diorama_width_slider.setSliderDown(False)
+    assert not panel.is_adjusting()

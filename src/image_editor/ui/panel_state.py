@@ -122,13 +122,15 @@ class StateMixin:
         self._on_aspect_source_changed()
 
     def _set_look_controls(self, settings: EditSettings) -> None:
-        """テイスト・フレーム・形・文字とスライダー（色・ディテール・角丸）を settings に合わせる。
+        """テイスト・フレーム・形・文字・ジオラマとスライダーを settings に合わせる。
 
         通知はしない（_block の中で呼ぶ）。
         """
         self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
         self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
         self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
+        combo = self.diorama_direction_combo
+        combo.setCurrentIndex(combo.findData(settings.diorama_direction))
         self._text = settings.text
         for item in self._adjustments:
             item.set_value(getattr(settings, item.field))
@@ -146,5 +148,4 @@ class StateMixin:
 
     def is_adjusting(self) -> bool:
         """スライダーをドラッグ中かを返す（ドラッグ中の変更は 1 回の操作としてまとめる）。"""
-        sliders = (self.corner_slider, *self._adjustment_sliders())
-        return any(slider.isSliderDown() for slider in sliders)
+        return any(item.slider.isSliderDown() for item in self._adjustments)

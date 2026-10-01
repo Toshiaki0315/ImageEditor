@@ -1,10 +1,12 @@
 import subprocess
 import sys
+from dataclasses import replace
 
 import pytest
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
 from image_editor.core import filters, frames, pipeline, transform
+from image_editor.core.diorama import DioramaDirection, DioramaSettings
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import (
@@ -949,3 +951,66 @@ def test_render_preview_trimmed_rotated_matches_apply_edits():
 def test_scale_settings_keeps_orientation():
     settings = EditSettings(orientation=Orientation(180, True))
     assert scale_settings(settings, 0.5).orientation == Orientation(180, True)
+
+
+# --- ジオラマ ---------------------------------------------------------------------
+
+
+def diorama_stripes(size: tuple[int, int] = (300, 300)) -> Image.Image:
+    image = Image.new("RGB", size, (0, 0, 0))
+    for x in range(0, size[0], 4):
+        image.paste((255, 255, 255), (x, 0, x + 2, size[1]))
+    return image
+
+
+def sharpness(image: Image.Image, box: tuple[int, int, int, int]) -> float:
+    return ImageStat.Stat(image.crop(box).convert("L")).stddev[0]
+
+
+DIORAMA = EditSettings(diorama_blur=100, diorama_width=10, diorama_vivid=0)
+
+
+def test_diorama_settings_bundle():
+    settings = EditSettings(
+        diorama_blur=40,
+        diorama_direction=DioramaDirection.VERTICAL,
+        diorama_position=30,
+        diorama_width=15,
+        diorama_vivid=5,
+    )
+    assert settings.diorama() == DioramaSettings(40, DioramaDirection.VERTICAL, 30, 15, 5)
+    assert EditSettings().diorama().is_off()
+
+
+def test_apply_edits_diorama_on_photo_after_crop():
+    image = diorama_stripes((300, 600))
+    # 下半分を切り抜くと、帯は切り抜いた写真の中央（元の画像の 3/4 の高さ）に来る
+    settings = replace(DIORAMA, crop=CropRect(0, 300, 300, 300))
+
+    result = apply_edits(image, settings)
+
+    assert result.size == (300, 300)
+    assert sharpness(result, (0, 145, 300, 155)) > 100
+    assert sharpness(result, (0, 0, 300, 10)) < 30
+
+
+def test_preview_diorama_follows_crop_in_full_view():
+    image = diorama_stripes((300, 600))
+    settings = replace(DIORAMA, crop=CropRect(0, 300, 300, 300))
+
+    rendered = render_preview(image, settings, 1.0, trimmed=False)
+
+    # 全体表示でも、帯は切り抜く範囲（下半分）の中央
+    assert sharpness(rendered, (0, 445, 300, 455)) > 100
+    assert sharpness(rendered, (0, 295, 300, 305)) < 60
+
+
+def test_preview_diorama_matches_saved_look():
+    image = diorama_stripes((1200, 1200))
+    preview, factor = make_preview(image, 300)
+
+    saved = apply_edits(image, DIORAMA).resize(preview.size, Image.Resampling.BOX)
+    shown = render_preview(preview, DIORAMA, factor, trimmed=True)
+
+    for box in ((0, 0, 300, 15), (0, 145, 300, 155)):
+        assert sharpness(shown, box) == pytest.approx(sharpness(saved, box), abs=10)

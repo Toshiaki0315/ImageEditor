@@ -1,5 +1,6 @@
 """D&D エリアとプレビュー表示。"""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -22,6 +23,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QLabel, QWidget
 
+from image_editor.core.diorama import DioramaBand
 from image_editor.core.histogram import Histogram
 from image_editor.core.io import is_supported
 from image_editor.ui.crop_overlay import CropOverlay
@@ -40,6 +42,69 @@ BADGE_STYLE = (
 CHECKER_SIZE = 8
 CHECKER_LIGHT = QColor(255, 255, 255)
 CHECKER_DARK = QColor(204, 204, 204)
+# ジオラマのピントの帯のガイド（実線: くっきり残す範囲の端、点線: ぼけきる位置）
+GUIDE_COLOR = QColor(255, 204, 0)
+GUIDE_SHADOW = QColor(0, 0, 0, 140)
+
+
+@dataclass(frozen=True)
+class DioramaGuide:
+    """プレビューに重ねる、ジオラマのピントの帯のガイド。
+
+    area は表示している画像の中の写真の範囲（左, 上, 幅, 高さ。画像に対する 0〜1 の割合）。
+    帯の位置 (band) は写真に対する割合で、写真の外にも続けて描く。
+    """
+
+    area: tuple[float, float, float, float]
+    horizontal: bool
+    band: DioramaBand
+
+    def lines(self) -> tuple[tuple[float, bool], ...]:
+        """ガイドの線の位置（表示している画像に対する割合）と、実線かどうかを返す。"""
+        left, top, width, height = self.area
+        start, length = (top, height) if self.horizontal else (left, width)
+        band = self.band
+        return (
+            (start + band.blur_start * length, False),
+            (start + band.sharp_start * length, True),
+            (start + band.sharp_end * length, True),
+            (start + band.blur_end * length, False),
+        )
+
+
+class _GuideView(QWidget):
+    """D&D エリアに重ね、ジオラマのガイドの線を描く（マウス操作は下に通す）。"""
+
+    def __init__(self, area: "DropArea") -> None:
+        super().__init__(area)
+        self._area = area
+        self.guide: DioramaGuide | None = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:
+        rect = self._area.image_rect()
+        if self.guide is None or rect.isEmpty():
+            return
+        painter = QPainter(self)
+        painter.setClipRect(rect)
+        for fraction, solid in self.guide.lines():
+            if self.guide.horizontal:
+                y = rect.y() + fraction * rect.height()
+                start, end = QPointF(rect.left(), y), QPointF(rect.right(), y)
+            else:
+                x = rect.x() + fraction * rect.width()
+                start, end = QPointF(x, rect.top()), QPointF(x, rect.bottom())
+            style = Qt.PenStyle.SolidLine if solid else Qt.PenStyle.DashLine
+            # 明るい写真でも暗い写真でも見えるよう、影を付けて描く
+            shadow = QPen(GUIDE_SHADOW, 3)
+            shadow.setStyle(style)
+            painter.setPen(shadow)
+            painter.drawLine(start, end)
+            pen = QPen(GUIDE_COLOR, 1.5)
+            pen.setStyle(style)
+            painter.setPen(pen)
+            painter.drawLine(start, end)
+        painter.end()
 
 
 class DropArea(QWidget):
@@ -66,6 +131,9 @@ class DropArea(QWidget):
         self.badge.setStyleSheet(BADGE_STYLE)
         self.badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.badge.hide()
+        # ジオラマのピントの帯のガイド（範囲選択のマスクより手前、表示・ヒストグラムより奥）
+        self._guide_view = _GuideView(self)
+        self._guide_view.hide()
         # 右下に重ねるヒストグラム（範囲選択のマスクより手前）
         self.histogram_view = HistogramView(self)
         # 100% 表示（画像 1px = 画面の 1 画素）。表示中の画像と、その左上のウィジェット座標
@@ -97,6 +165,24 @@ class DropArea(QWidget):
     def badge_text(self) -> str | None:
         """表示中の text を返す（表示していなければ None）。"""
         return self.badge.text() if self.badge.isVisible() else None
+
+    def set_diorama_guide(self, guide: DioramaGuide | None) -> None:
+        """ジオラマのピントの帯のガイドを重ねて表示する。None で消す。"""
+        view = self._guide_view
+        if guide == view.guide and view.isVisible() == (guide is not None):
+            return
+        view.guide = guide
+        view.setVisible(guide is not None)
+        if guide is not None:
+            view.raise_()
+            # バッジ・ヒストグラムはガイドより手前に出す
+            self.badge.raise_()
+            self.histogram_view.raise_()
+        view.update()
+
+    def diorama_guide(self) -> DioramaGuide | None:
+        """表示中のガイドを返す（表示していなければ None）。"""
+        return self._guide_view.guide if self._guide_view.isVisible() else None
 
     def set_histogram(self, histogram: Histogram | None) -> None:
         """右下にヒストグラムを重ねて表示する。None で消す。"""
@@ -224,6 +310,7 @@ class DropArea(QWidget):
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         super().resizeEvent(event)
         self.crop_overlay.setGeometry(self.rect())
+        self._guide_view.setGeometry(self.rect())
         if self._zoom is not None:
             self._clamp_zoom_offset()
         self._place_badge()
