@@ -44,15 +44,23 @@ src/image_editor/
     pipeline.py          # EditSettings (dataclass) と apply_edits()
     presets.py           # 加工設定のプリセット（名前付きの加工の組み合わせ）の保存・読み込み
     batch.py             # 複数の画像に同じ加工をまとめて適用して保存する（一括処理）
+    parallel.py          # 重いフィルターを帯に分けて並列にかける（結果は一度にかけたときと同じ）
     histogram.py         # ヒストグラム（R・G・B・輝度の分布）の計算
     text.py              # 文字・透かし（フォント・位置・描画）
   ui/                    # PyQt6 のウィジェット
-    main_window.py
+    main_window.py       # メインウィンドウ（読み込み・プレビュー・保存・メニュー）。役割ごとに Mixin を混ぜる
+    window_view.py       #   ViewMixin: 加工前との比較・100% 表示・ヒストグラム
+    window_batch.py      #   BatchMixin: まとめて処理
+    window_presets.py    #   PresetMixin: プリセット・文字・透かしのダイアログ
+    window_history.py    #   HistoryMixin: アンドゥ／リドゥ
     drop_area.py         # D&D + プレビュー表示
-    settings_panel.py
+    settings_panel.py    # 設定パネル（タブ: 加工／切り抜き／出力）。役割ごとに Mixin を混ぜる
+    panel_crop.py        #   CropMixin: トリミング・縦横比・回転・反転
+    panel_state.py       #   StateMixin: 状態の取り出し・戻し・プリセット・文字・加工のリセット
+    panel_parts.py       #   定数・スライダーなどの部品・PanelState
     crop_overlay.py      # プレビュー上のドラッグ範囲選択
     qt_image.py          # PIL.Image <-> QPixmap 変換
-    worker.py            # 原寸処理・保存・一括処理のワーカー (QRunnable)
+    worker.py            # 原寸処理・保存・一括処理・100% 表示のワーカー (QRunnable)
     batch_dialog.py      # 一括処理の設定ダイアログ
     histogram_view.py    # プレビューに重ねるヒストグラム
     text_dialog.py       # 文字・透かしの設定ダイアログ

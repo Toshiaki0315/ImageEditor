@@ -1188,23 +1188,9 @@ def test_save_options_defaults(panel):
     assert panel.save_options() == SaveOptions()
     assert panel.quality_value_label.text() == "90"
     assert (panel.quality_slider.minimum(), panel.quality_slider.maximum()) == (1, 100)
-    assert not panel.is_save_options_expanded()  # 既定は閉じる
-    assert panel.save_options_summary.text() == "JPEG 90 ／ EXIF あり（位置情報なし）"
-
-
-def test_save_options_toggle(panel, qtbot):
-    with qtbot.waitSignal(panel.save_options_expanded_changed) as blocker:
-        panel.save_options_toggle.click()
-
-    assert blocker.args == [True]
-    assert panel.is_save_options_expanded()
-    assert panel.save_options_body.isVisibleTo(panel)
-    assert not panel.save_options_summary.isVisibleTo(panel)
 
 
 def test_save_options_changed(panel, qtbot):
-    panel.set_save_options_expanded(True)
-
     with qtbot.waitSignal(panel.save_options_changed) as blocker:
         panel.quality_slider.setValue(75)
     assert blocker.args[0] == SaveOptions(quality=75)
@@ -1212,7 +1198,6 @@ def test_save_options_changed(panel, qtbot):
 
     panel.keep_gps_check.setChecked(True)
     assert panel.save_options() == SaveOptions(quality=75, keep_gps=True)
-    assert "位置情報あり" in panel.save_options_summary.text()
 
 
 def test_gps_needs_exif(panel):
@@ -1221,7 +1206,6 @@ def test_gps_needs_exif(panel):
     panel.keep_exif_check.setChecked(False)
 
     assert not panel.keep_gps_check.isEnabled()
-    assert panel.save_options_summary.text() == "JPEG 90 ／ EXIF なし"
 
 
 def test_set_save_options_does_not_emit(panel, qtbot):
@@ -1244,7 +1228,7 @@ def test_save_options_are_kept_on_new_image(panel):
 
 
 def test_quality_double_click_resets_to_default(panel, qtbot):
-    panel.set_save_options_expanded(True)
+    panel.set_current_tab(2)
     panel.quality_slider.setValue(40)
     qtbot.mouseDClick(panel.quality_slider, Qt.MouseButton.LeftButton)
     assert panel.quality_slider.value() == 90
@@ -1384,28 +1368,12 @@ def test_preset_button_disabled_without_image(qtbot):
 # --- ディテール（シャープ・ぼかし・ノイズ除去） ---------------------------------------
 
 
-def test_detail_defaults_and_collapsed(panel):
-    assert not panel.is_detail_expanded()
-    assert panel.detail_summary.text() == "なし"
+def test_detail_defaults(panel):
     for slider in (panel.sharpen_slider, panel.blur_slider, panel.denoise_slider):
         assert (slider.minimum(), slider.maximum(), slider.value()) == (0, 100, 0)
-        assert not slider.isVisibleTo(panel)  # 閉じている間は出さない
-    # 見出しは「加工をリセット」と同じ行
-    assert panel.detail_toggle.y() == pytest.approx(panel.reset_adjustments_button.y(), abs=6)
 
 
-def test_detail_toggle_shows_sliders(panel, qtbot):
-    with qtbot.waitSignal(panel.detail_expanded_changed) as blocker:
-        panel.detail_toggle.click()
-
-    assert blocker.args == [True]
-    assert panel.sharpen_slider.isVisibleTo(panel)
-    assert panel.denoise_slider.isVisibleTo(panel)
-
-
-def test_detail_sliders_update_settings_and_summary(panel, qtbot):
-    panel.set_detail_expanded(True)
-
+def test_detail_sliders_update_settings(panel, qtbot):
     with qtbot.waitSignal(panel.settings_changed) as blocker:
         panel.sharpen_slider.setValue(20)
     panel.denoise_slider.setValue(10)
@@ -1414,11 +1382,9 @@ def test_detail_sliders_update_settings_and_summary(panel, qtbot):
     settings = panel.settings()
     assert (settings.sharpen, settings.blur, settings.denoise) == (20, 0, 10)
     assert panel.sharpen_value_label.text() == "20"
-    assert panel.detail_summary.text() == "シャープ 20・ノイズ除去 10"
 
 
 def test_detail_reset_and_double_click(panel, qtbot):
-    panel.set_detail_expanded(True)
     panel.blur_slider.setValue(30)
     qtbot.mouseDClick(panel.blur_slider, Qt.MouseButton.LeftButton)
     assert panel.blur_slider.value() == 0
@@ -1426,7 +1392,6 @@ def test_detail_reset_and_double_click(panel, qtbot):
     panel.sharpen_slider.setValue(40)
     panel.reset_adjustments()
     assert panel.sharpen_slider.value() == 0
-    assert panel.detail_summary.text() == "なし"
 
 
 def test_detail_restore_and_preset(panel):
@@ -1446,3 +1411,71 @@ def test_detail_is_reset_on_new_image(panel):
     panel.denoise_slider.setValue(50)
     panel.set_image_size((200, 100))
     assert panel.denoise_slider.value() == 0
+
+
+# --- タブ -----------------------------------------------------------------------
+
+
+def tab_of(panel: SettingsPanel, widget) -> int:
+    """widget が入っているタブの番号。"""
+    for index in range(panel.tabs.count()):
+        if panel.tabs.widget(index).isAncestorOf(widget):
+            return index
+    raise AssertionError("どのタブにも入っていない")
+
+
+def test_tabs(panel):
+    names = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+    assert names == ["加工", "切り抜き", "出力"]
+    assert panel.current_tab() == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "tab"),
+    [
+        ("filter_combo", 0),
+        ("preset_button", 0),
+        ("text_button", 0),
+        ("exposure_slider", 0),
+        ("aging_slider", 0),
+        ("sharpen_slider", 0),
+        ("denoise_slider", 0),
+        ("reset_adjustments_button", 0),
+        ("frame_combo", 1),
+        ("shape_combo", 1),
+        ("corner_slider", 1),
+        ("rotate_left_button", 1),
+        ("aspect_combo", 1),
+        ("crop_x_spin", 1),
+        ("trim_button", 1),
+        ("width_spin", 2),
+        ("keep_aspect_check", 2),
+        ("quality_slider", 2),
+        ("keep_gps_check", 2),
+    ],
+)
+def test_widgets_are_in_tabs(panel, name, tab):
+    assert tab_of(panel, getattr(panel, name)) == tab
+
+
+def test_buttons_are_outside_tabs(panel):
+    # 「加工前」「保存」「リセット」はどのタブでも出す
+    for button in (panel.compare_button, panel.save_button, panel.reset_button):
+        assert not panel.tabs.isAncestorOf(button)
+
+
+def test_tab_changed_signal(panel, qtbot):
+    with qtbot.waitSignal(panel.tab_changed) as blocker:
+        panel.set_current_tab(2)
+    assert blocker.args == [2]
+    assert panel.current_tab() == 2
+    panel.set_current_tab(9)  # 範囲外は無視
+    assert panel.current_tab() == 2
+
+
+def test_tabs_work_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert widget.tabs.isEnabled()
+    assert widget.tabs.tabBar().isEnabled()
+    assert not widget.exposure_slider.isEnabled()

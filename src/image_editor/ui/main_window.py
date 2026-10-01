@@ -4,21 +4,16 @@ from pathlib import Path
 
 from PIL import Image
 from PyQt6.QtCore import (
-    QEvent,
-    QObject,
-    QPointF,
     QSettings,
     Qt,
     QThreadPool,
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
+from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
-    QDialog,
     QFileDialog,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -28,7 +23,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from image_editor.core.batch import BatchOptions, BatchResult
 from image_editor.core.histogram import Histogram
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
@@ -48,20 +42,20 @@ from image_editor.core.pipeline import (
     render_preview_with_histogram,
 )
 from image_editor.core.presets import (
-    Preset,
     PresetError,
     load_presets,
-    normalize_name,
-    preset_from_settings,
-    remove_preset,
-    save_presets,
-    upsert_preset,
 )
-from image_editor.ui.batch_dialog import BatchDialog
 from image_editor.ui.drop_area import DropArea
 from image_editor.ui.history import History
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
 from image_editor.ui.text_dialog import TextDialog
+from image_editor.ui.window_batch import BatchMixin
+from image_editor.ui.window_history import HistoryMixin
+from image_editor.ui.window_presets import (  # noqa: F401 - 外からも使う
+    PresetMixin,
+    default_preset_name,
+)
+from image_editor.ui.window_view import PREF_SHOW_HISTOGRAM, ViewMixin
 from image_editor.ui.worker import BatchTask, SaveTask, ZoomTask
 
 WINDOW_TITLE = "Image Editor"
@@ -87,22 +81,13 @@ DISCARD_QUESTION = "保存していない変更があります。破棄してよ
 AUTO_PREVIEW_DELAY_MS = 300
 # 設定の変更が落ち着いてから履歴に積むまでの待ち時間（続けて変えた分は 1 回の操作にまとめる）
 HISTORY_DELAY_MS = 500
-# 画像を開いていないときの、一括処理の長辺の初期値
-DEFAULT_BATCH_LONG_SIDE = 2048
-# 押している間だけ加工前の画像を表示するキー（JIS 配列の ¥ キーも同じ位置にある）
-COMPARE_KEYS = (Qt.Key.Key_Backslash, Qt.Key.Key_yen)
-COMPARE_BADGE_TEXT = "加工前"
-ZOOM_BADGE_TEXT = "100%"
-ZOOM_RENDERING_TEXT = "更新中…"
 
 
 # 保存の設定をアプリの環境設定に残すキー
 PREF_JPEG_QUALITY = "save/jpeg_quality"
 PREF_KEEP_EXIF = "save/keep_exif"
 PREF_KEEP_GPS = "save/keep_gps"
-PREF_SAVE_OPTIONS_EXPANDED = "save/options_expanded"  # 設定パネルの「保存の設定」を開いているか
-PREF_DETAIL_EXPANDED = "panel/detail_expanded"  # 設定パネルの「ディテール」を開いているか
-PREF_SHOW_HISTOGRAM = "view/histogram"  # プレビューにヒストグラムを重ねるか
+PREF_PANEL_TAB = "panel/tab"  # 設定パネルで最後に開いていたタブ
 
 
 PRESETS_FILE = Path.home() / "Library" / "Application Support" / "ImageEditor" / "presets.json"
@@ -111,15 +96,6 @@ PRESETS_FILE = Path.home() / "Library" / "Application Support" / "ImageEditor" /
 def default_presets_path() -> Path:
     """プリセットの保存先（~/Library/Application Support/ImageEditor/presets.json）。"""
     return PRESETS_FILE
-
-
-def default_preset_name(presets: list[Preset]) -> str:
-    """まだ使われていない「プリセット 1」「プリセット 2」… の名前を返す。"""
-    names = {preset.name for preset in presets}
-    number = 1
-    while f"プリセット {number}" in names:
-        number += 1
-    return f"プリセット {number}"
 
 
 def default_preferences() -> QSettings:
@@ -147,7 +123,7 @@ def store_save_options(preferences: QSettings, options: SaveOptions) -> None:
 SAME_FILE_MESSAGE = "元の画像と同じファイルには保存できません。別のファイル名を指定してください。"
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
     """左に D&D エリア、右に設定パネル、下にステータスバーを持つメインウィンドウ。"""
 
     save_finished = pyqtSignal(object)  # Path
@@ -220,17 +196,12 @@ class MainWindow(QMainWindow):
         self.settings_panel.save_options_changed.connect(
             lambda options: store_save_options(self._preferences, options)
         )
-        self.settings_panel.set_save_options_expanded(
-            bool(self._preferences.value(PREF_SAVE_OPTIONS_EXPANDED, False, type=bool))
+        # 最後に開いていたタブを次に起動したときも開く
+        self.settings_panel.set_current_tab(
+            int(self._preferences.value(PREF_PANEL_TAB, 0, type=int))
         )
-        self.settings_panel.save_options_expanded_changed.connect(
-            lambda expanded: self._preferences.setValue(PREF_SAVE_OPTIONS_EXPANDED, expanded)
-        )
-        self.settings_panel.set_detail_expanded(
-            bool(self._preferences.value(PREF_DETAIL_EXPANDED, False, type=bool))
-        )
-        self.settings_panel.detail_expanded_changed.connect(
-            lambda expanded: self._preferences.setValue(PREF_DETAIL_EXPANDED, expanded)
+        self.settings_panel.tab_changed.connect(
+            lambda index: self._preferences.setValue(PREF_PANEL_TAB, index)
         )
         self.settings_panel.compare_toggled.connect(self.set_comparing)
         # 文字・透かしのダイアログ（開いたまま調整でき、変更はすぐ設定に反映する）
@@ -437,190 +408,7 @@ class MainWindow(QMainWindow):
 
     # --- 加工前との比較 ------------------------------------------------------
 
-    def open_text_dialog(self) -> None:
-        """文字・透かしのダイアログを開く（今の設定を表示する）。"""
-        if self.loaded is None:
-            return
-        self.text_dialog.set_settings(self.settings_panel.text_settings())
-        self.text_dialog.show()
-        self.text_dialog.raise_()
-        self.text_dialog.activateWindow()
-
-    def is_histogram_shown(self) -> bool:
-        """プレビューにヒストグラムを重ねて表示する設定かを返す。"""
-        return self.histogram_action.isChecked()
-
-    def _on_histogram_toggled(self, shown: bool) -> None:
-        self._preferences.setValue(PREF_SHOW_HISTOGRAM, shown)
-        self._show_histogram()
-
-    def _show_histogram(self) -> None:
-        """設定が表示で、画像があればヒストグラムを重ねる。"""
-        show = self.is_histogram_shown() and self.loaded is not None
-        self.drop_area.set_histogram(self._histogram if show else None)
-
-    def set_comparing(self, comparing: bool) -> None:
-        """加工前の画像の表示を切り替える（押している間だけ True にする）。
-
-        加工前は、向き（回転・反転）と表示範囲はそのままで、色の調整・テイスト・周辺減光・
-        経年劣化・形・フレームを外したもの。表示中は左上に「加工前」と出す。
-        """
-        comparing = comparing and self.loaded is not None
-        if comparing == self._comparing:
-            return
-        self._comparing = comparing
-        self._update_badge()
-        self.update_preview()
-        if self._zoomed:
-            self._render_zoom()
-
     # --- 100% 表示 ---------------------------------------------------------------
-
-    def show_actual_size(self, center: tuple[float, float] | None = None) -> None:
-        """100% 表示にする（原寸で処理した保存結果を、画像 1px = 画面の 1 画素で見せる）。
-
-        原寸の処理は裏で行い、終わるまでは前の表示のまま「更新中…」と出す。center は
-        表示の中央にしたい点（保存結果の画像の座標）。省略時は画像の中央。
-        """
-        if self.loaded is None:
-            return
-        self._zoomed = True
-        self._zoom_center = center
-        # 100% 表示の間はドラッグで見る場所を動かすので、範囲の選択は止める
-        self.drop_area.crop_overlay.set_active(False)
-        self._render_zoom()
-        self._update_actions()
-
-    def fit_to_window(self) -> None:
-        """画面に合わせた表示に戻す。"""
-        if not self._zoomed:
-            return
-        self._leave_zoom()
-        if self.loaded is not None:
-            self.drop_area.crop_overlay.set_active(not self.settings_panel.is_trim_view())
-        self._update_actions()
-
-    def is_zoomed(self) -> bool:
-        """100% 表示中かを返す。"""
-        return self._zoomed
-
-    def is_zoom_rendering(self) -> bool:
-        """100% 表示のための原寸の処理中かを返す。"""
-        return self._zoom_pending
-
-    def _leave_zoom(self) -> None:
-        self._zoomed = False
-        self._zoom_generation += 1  # 処理中の結果は使わない
-        self._zoom_pending = False
-        self._zoom_timer.stop()
-        self._zoom_center = None
-        self.drop_area.set_zoom_image(None)
-        self._update_badge()
-
-    def _render_zoom(self) -> None:
-        """今の設定（加工前の表示中なら加工前）で原寸の処理を裏で始める。"""
-        self._zoom_timer.stop()
-        if not self._zoomed or self.loaded is None:
-            return
-        settings = self.settings_panel.settings()
-        shown = self._before_settings(settings) if self._comparing else settings
-        self._zoom_generation += 1
-        task = ZoomTask(self.loaded.image, shown, self._zoom_generation)
-        task.setAutoDelete(False)  # 完了通知を受け取るまで Python 側で保持する
-        task.signals.finished.connect(
-            lambda image, generation, task=task: self._on_zoom_finished(task, image, generation)
-        )
-        task.signals.failed.connect(
-            lambda message, generation, task=task: self._on_zoom_failed(task, message, generation)
-        )
-        self._zoom_tasks.add(task)
-        self._zoom_pending = True
-        self._update_badge()
-        self._thread_pool.start(task)
-
-    def _on_zoom_finished(self, task: ZoomTask, image: Image.Image, generation: int) -> None:
-        self._zoom_tasks.discard(task)
-        if generation != self._zoom_generation:
-            return  # 古い依頼の結果（設定がその後変わった）
-        self._zoom_pending = False
-        if self._zoomed:
-            self.drop_area.set_zoom_image(image, self._zoom_center)
-            self._zoom_center = None
-        self._update_badge()
-
-    def _on_zoom_failed(self, task: ZoomTask, message: str, generation: int) -> None:
-        self._zoom_tasks.discard(task)
-        if generation != self._zoom_generation:
-            return
-        self._zoom_pending = False
-        self.fit_to_window()
-        self._show_error("100% で表示できません", message)
-
-    def _on_preview_double_clicked(self, point: QPointF) -> None:
-        """100% 表示中なら画面に合わせた表示に戻す。切り抜き表示中なら、その点を 100% で見る。
-
-        通常の表示ではクリックで範囲を解除するので、ダブルクリックでは切り替えない。
-        """
-        if self._zoomed:
-            self.fit_to_window()
-            return
-        if self.loaded is None or not self.settings_panel.is_trim_view():
-            return
-        rect = self.drop_area.image_rect()
-        if rect.isEmpty() or not rect.contains(point):
-            return
-        width, height = output_size(self.loaded.image.size, self.settings_panel.settings())
-        center = (
-            (point.x() - rect.x()) / rect.width() * width,
-            (point.y() - rect.y()) / rect.height() * height,
-        )
-        self.show_actual_size(center)
-
-    def _update_badge(self) -> None:
-        """左上の表示（「加工前」「100%」「更新中…」）をまとめて出す。"""
-        parts = []
-        if self._comparing:
-            parts.append(COMPARE_BADGE_TEXT)
-        if self._zoomed:
-            parts.append(ZOOM_BADGE_TEXT)
-            if self._zoom_pending:
-                parts.append(ZOOM_RENDERING_TEXT)
-        self.drop_area.set_badge(" ・ ".join(parts) if parts else None)
-
-    def is_comparing(self) -> bool:
-        """加工前の画像を表示中かを返す。"""
-        return self._comparing
-
-    def _before_settings(self, settings: EditSettings) -> EditSettings:
-        """加工前の表示用の設定。向きと、実際に切り抜く範囲だけを残す。"""
-        assert self.loaded is not None
-        size = settings.orientation.size(self.loaded.image.size)
-        # フレーム・円の比に合わせた範囲も、そのままの範囲で見比べられるようにする
-        crop = effective_crop(size, settings.crop, settings.frame, settings.shape)
-        return EditSettings(orientation=settings.orientation, crop=crop)
-
-    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:
-        if (
-            isinstance(event, QKeyEvent)
-            and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-            and event.key() in COMPARE_KEYS
-            and self.isActiveWindow()
-            and self.loaded is not None
-        ):
-            if not event.isAutoRepeat():
-                self.set_comparing(event.type() == QEvent.Type.KeyPress)
-            return True  # 数値欄などに文字として入らないようにする
-        return super().eventFilter(watched, event)
-
-    def changeEvent(self, event: QEvent | None) -> None:
-        # キーを押したまま別のウィンドウに切り替えると離したことが届かないので、ここで戻す
-        if (
-            event is not None
-            and event.type() == QEvent.Type.ActivationChange
-            and not self.isActiveWindow()
-        ):
-            self.set_comparing(False)
-        super().changeEvent(event)
 
     def save_file_dialog(self) -> None:
         """保存ダイアログを開き、原寸で処理して書き出す。"""
@@ -686,91 +474,9 @@ class MainWindow(QMainWindow):
 
     # --- 一括処理 ---------------------------------------------------------------
 
-    def batch_dialog(self) -> None:
-        """一括処理のダイアログを開き、「開始」なら処理を始める。
-
-        かける加工は「今の加工」かプリセット。開いている画像があれば一覧に入れておく。
-        """
-        if self.is_busy():
-            return
-        panel = self.settings_panel
-        width, height = panel.width_spin.value(), panel.height_spin.value()
-        settings = panel.settings()
-        dialog = BatchDialog(
-            current_look=preset_from_settings("今の加工", settings),
-            presets=panel.presets(),
-            long_side=max(width, height) if self.loaded is not None else DEFAULT_BATCH_LONG_SIDE,
-            resize=settings.width is not None or settings.height is not None,
-            sources=[self.loaded.path] if self.loaded is not None else [],
-            parent=self,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        out_dir = dialog.out_dir()
-        if out_dir is None or not dialog.sources():
-            return
-        self.start_batch(dialog.sources(), out_dir, dialog.options(panel.save_options()))
-
-    def start_batch(self, sources: list[Path], out_dir: Path, options: BatchOptions) -> bool:
-        """一括処理をワーカースレッドで始め、進み具合と「中止」を出す。始められたら True。"""
-        if self.is_busy() or not sources:
-            return False
-        task = BatchTask(sources, out_dir, options)
-        task.setAutoDelete(False)  # 完了通知を受け取るまで Python 側で保持する
-        progress = QProgressDialog("まとめて処理しています…", "中止", 0, len(sources), self)
-        progress.setWindowTitle("まとめて処理")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setValue(0)
-
-        def on_cancel() -> None:
-            task.cancel()
-            progress.setLabelText("中止しています…（処理中の 1 枚が終わるまでお待ちください）")
-
-        def on_progress(done: int, total: int, name: str) -> None:
-            progress.setValue(done)
-            progress.setLabelText(f"{done + 1} / {total} 枚目を処理しています… {name}")
-
-        progress.canceled.connect(on_cancel)
-        task.signals.progress.connect(on_progress)
-        task.signals.finished.connect(
-            lambda results, cancelled: self._on_batch_finished(results, cancelled, out_dir)
-        )
-        self._batch_task = task
-        self._batch_progress = progress
-        self._update_actions()
-        self._thread_pool.start(task)
-        return True
-
-    def is_batch_running(self) -> bool:
-        """一括処理の実行中かを返す。"""
-        return self._batch_task is not None
-
     def is_busy(self) -> bool:
         """保存か一括処理の実行中かを返す。"""
         return self.is_saving() or self.is_batch_running()
-
-    def _on_batch_finished(
-        self, results: list[BatchResult], cancelled: bool, out_dir: Path
-    ) -> None:
-        if self._batch_progress is not None:
-            self._batch_progress.close()
-        self._batch_task = None
-        self._batch_progress = None
-        self._update_actions()
-        saved = [r for r in results if r.output is not None]
-        failed = [r for r in results if r.error is not None]
-        head = "中止しました。" if cancelled else ""
-        message = f"{head}{len(saved)} 枚を保存しました。\n保存先: {out_dir}"
-        if failed:
-            lines = "\n".join(f"・{r.source.name}（{r.error}）" for r in failed[:10])
-            more = f"\n…ほか {len(failed) - 10} 枚" if len(failed) > 10 else ""
-            message += f"\n\n{len(failed)} 枚は処理できませんでした:\n{lines}{more}"
-        self._update_status(f"まとめて処理: {len(saved)} 枚を保存しました")
-        QMessageBox.information(self, "まとめて処理", message)
-        self.batch_finished.emit(results, cancelled)
 
     def is_saving(self) -> bool:
         """保存処理中かを返す。"""
@@ -819,106 +525,7 @@ class MainWindow(QMainWindow):
 
     # --- アンドゥ／リドゥ -----------------------------------------------------
 
-    def undo(self) -> None:
-        """設定の変更を 1 つ元に戻す（まだ履歴に積んでいない変更があれば、それを戻す）。"""
-        if self.loaded is None or self.is_saving():
-            return
-        self._commit_history(force=True)
-        if self._history.can_undo():
-            self._restore_history(self._history.undo())
-
-    def redo(self) -> None:
-        """元に戻した変更を 1 つやり直す。"""
-        if self.loaded is None or self.is_saving():
-            return
-        self._commit_history(force=True)
-        if self._history.can_redo():
-            self._restore_history(self._history.redo())
-
-    def _commit_history(self, force: bool = False) -> None:
-        """今の状態を履歴に積む。
-
-        スライダーや範囲をドラッグしている間は待つ（ドラッグ全体を 1 回の操作にする）。
-        force なら待たずに積む。
-        """
-        self._history_timer.stop()
-        if self.loaded is None:
-            return
-        dragging = self.settings_panel.is_adjusting() or self.drop_area.crop_overlay.is_dragging()
-        if dragging and not force:
-            self._history_timer.start()
-            return
-        self._history.push(self.settings_panel.snapshot())
-        self._update_actions()
-
-    def _restore_history(self, state: PanelState) -> None:
-        self._restoring = True
-        try:
-            self.settings_panel.restore(state)
-        finally:
-            self._restoring = False
-        self._history_timer.stop()
-        self._update_actions()
-
-    def _reset_history(self) -> None:
-        """履歴を消して、今の状態を始まりにする（画像の読み込み・リセット時）。"""
-        self._history_timer.stop()
-        self._history.reset(self.settings_panel.snapshot())
-        self._update_actions()
-
     # --- プリセット -----------------------------------------------------------
-
-    def save_preset_dialog(self) -> None:
-        """今の加工を、名前を付けてプリセットとして保存する。同じ名前なら上書きを確認する。"""
-        if self.loaded is None:
-            return
-        presets = self.settings_panel.presets()
-        text, ok = QInputDialog.getText(
-            self,
-            "プリセットを保存",
-            "プリセットの名前:",
-            text=default_preset_name(presets),
-        )
-        name = normalize_name(text)
-        if not ok or not name:
-            return
-        if any(preset.name == name for preset in presets):
-            answer = QMessageBox.question(
-                self,
-                "プリセットを保存",
-                f"プリセット「{name}」はすでにあります。上書きしますか？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        preset = preset_from_settings(name, self.settings_panel.settings())
-        if self._store_presets(upsert_preset(presets, preset)):
-            self._update_status(f"プリセット「{name}」を保存しました")
-
-    def delete_preset(self, name: str) -> None:
-        """プリセットを確認のうえ削除する。"""
-        answer = QMessageBox.question(
-            self,
-            "プリセットを削除",
-            f"プリセット「{name}」を削除しますか？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        if self._store_presets(remove_preset(self.settings_panel.presets(), name)):
-            self._update_status(f"プリセット「{name}」を削除しました")
-
-    def _store_presets(self, presets: list[Preset]) -> bool:
-        """プリセットの一覧をファイルに書き、メニューに反映する。失敗したら通知して False。"""
-        try:
-            save_presets(self._presets_path, presets)
-        except PresetError as e:  # NFR-04
-            self._show_error("プリセットを保存できません", str(e))
-            return False
-        self.settings_panel.set_presets(presets)
-        return True
 
     def has_unsaved_changes(self) -> bool:
         """初期状態から設定を変えていて、その設定でまだ保存していなければ True。"""
