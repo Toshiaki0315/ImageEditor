@@ -6,7 +6,8 @@ from dataclasses import dataclass, replace
 
 from PIL import Image
 
-from image_editor.core import effects, filters, frames, shapes, text, transform
+from image_editor.core import diorama, effects, filters, frames, shapes, text, transform
+from image_editor.core.diorama import DioramaDirection, DioramaSettings
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FRAME_COLOR, FrameType
 from image_editor.core.histogram import Histogram, compute_histogram
@@ -37,19 +38,35 @@ class EditSettings:
     sharpen: int = 0  # シャープ 0〜100（0 = なし）
     blur: int = 0  # ぼかし 0〜100（0 = なし）
     denoise: int = 0  # ノイズ除去 0〜100（0 = なし）
+    # ジオラマ風（ぼかし 0 = なし）。位置・幅は写真の高さ・幅に対する %
+    diorama_blur: int = 0
+    diorama_direction: DioramaDirection = DioramaDirection.HORIZONTAL
+    diorama_position: int = diorama.DIORAMA_POSITION_DEFAULT
+    diorama_width: int = diorama.DIORAMA_WIDTH_DEFAULT
+    diorama_vivid: int = diorama.DIORAMA_VIVID_DEFAULT
     frame: FrameType = FrameType.NONE
     text: TextSettings = TextSettings()  # 文字・透かし（空なら描かない）
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = shapes.CORNER_RADIUS_DEFAULT  # 角丸の半径（短辺に対する % 0〜50）
+
+    def diorama(self) -> DioramaSettings:
+        """ジオラマ風の加工の設定をまとめて返す。"""
+        return DioramaSettings(
+            blur=self.diorama_blur,
+            direction=self.diorama_direction,
+            position=self.diorama_position,
+            width=self.diorama_width,
+            vivid=self.diorama_vivid,
+        )
 
 
 def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     """原画像に編集を適用した新しい画像を返す（原画像は変更しない）。
 
     処理順: 回転・反転 → トリミング（フレームの写真部分・円の比率への切り抜きを含む）
-    → リサイズ → 露出 → 明るさ → コントラスト → 色温度 → 彩度 → フィルター → 周辺減光
-    → 経年劣化 → 形 → フレーム。形の外側は、フレームがあればフレームの白、なければ透明にする。
-    フレームには周辺減光・経年劣化をかけない。
+    → リサイズ → 露出 → 明るさ → コントラスト → 色温度 → 彩度 → ディテール → ジオラマ
+    → フィルター → 周辺減光 → 経年劣化 → 形 → 文字 → フレーム。形の外側は、フレームが
+    あればフレームの白、なければ透明にする。フレームには周辺減光・経年劣化をかけない。
     """
     image = settings.orientation.transpose(original)
     rect = effective_crop(image.size, settings.crop, settings.frame, settings.shape)
@@ -60,8 +77,10 @@ def apply_edits(original: Image.Image, settings: EditSettings) -> Image.Image:
     if size != image.size:
         image = transform.resize(image, size)
 
-    # 写真アプリの基本補正と同じく、露出〜彩度・ディテールはフィルターの前に整える
+    # 写真アプリの基本補正と同じく、露出〜彩度・ディテール・ジオラマはフィルターの前に整える
     image = _apply_detail(_apply_basic_adjustments(image, settings), settings)
+    if settings.diorama_blur:
+        image = diorama.diorama(image, settings.diorama())
     # apply_filter は常に新しい画像を返すので、原画像がそのまま返ることはない
     image = filters.apply_filter(image, settings.filter)
     if settings.vignette:
@@ -112,6 +131,10 @@ def render_preview_with_histogram(
     reference = min(rect.width, rect.height) if rect is not None else min(image.size)
     output = _saved_photo_short_side(image.size, settings, factor)
     adjusted = _apply_detail(_apply_basic_adjustments(image, settings), settings, reference, output)
+    # ジオラマの帯は写真（実際に切り抜く範囲）に対する位置に置き、全体表示では外側にも続ける
+    if settings.diorama_blur:
+        area = rect.box if rect is not None else None
+        adjusted = diorama.diorama(adjusted, settings.diorama(), area=area)
     rendered = filters.apply_filter(adjusted, settings.filter)
     if trimmed and rect is not None:
         rendered = transform.crop(rendered, rect)

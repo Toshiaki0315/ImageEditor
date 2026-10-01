@@ -8,6 +8,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
+from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
@@ -26,9 +27,8 @@ class PresetError(Exception):
 class Preset:
     """名前付きの加工の組み合わせ。
 
-    テイスト・色の調整・ディテール（シャープ・ぼかし・ノイズ除去）・フレーム・形・文字を持つ。
-    サイズ変更・トリミング・回転は画像ごとの
-    設定なので含めない。
+    テイスト・色の調整・ディテール（シャープ・ぼかし・ノイズ除去）・ジオラマ・フレーム・形・
+    文字を持つ。サイズ変更・トリミング・回転は画像ごとの設定なので含めない。
     """
 
     name: str
@@ -43,6 +43,11 @@ class Preset:
     sharpen: int = 0
     blur: int = 0
     denoise: int = 0
+    diorama_blur: int = 0
+    diorama_direction: DioramaDirection = EditSettings.diorama_direction
+    diorama_position: int = EditSettings.diorama_position
+    diorama_width: int = EditSettings.diorama_width
+    diorama_vivid: int = EditSettings.diorama_vivid
     frame: FrameType = FrameType.NONE
     shape: ShapeType = ShapeType.RECTANGLE
     corner_radius: int = EditSettings.corner_radius
@@ -51,10 +56,13 @@ class Preset:
 
 # プリセットが持つ設定の項目（name 以外。EditSettings の同名の項目に対応する）
 PRESET_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(Preset) if f.name != "name")
-_ENUM_FIELDS: dict[str, type[FilterType] | type[FrameType] | type[ShapeType]] = {
+_ENUM_FIELDS: dict[
+    str, type[FilterType] | type[FrameType] | type[ShapeType] | type[DioramaDirection]
+] = {
     "filter": FilterType,
     "frame": FrameType,
     "shape": ShapeType,
+    "diorama_direction": DioramaDirection,
 }
 
 

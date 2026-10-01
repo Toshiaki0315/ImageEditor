@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.pipeline import EditSettings
@@ -34,6 +35,11 @@ LOOK = EditSettings(
     frame=FrameType.INSTAX_MINI,
     shape=ShapeType.ROUNDED,
     corner_radius=25,
+    diorama_blur=60,
+    diorama_direction=DioramaDirection.VERTICAL,
+    diorama_position=35,
+    diorama_width=15,
+    diorama_vivid=70,
 )
 
 
@@ -121,6 +127,21 @@ def test_load_uses_defaults_for_missing_fields(tmp_path):
     assert preset.exposure == 1.0
     assert preset.temperature == 6500
     assert preset.corner_radius == 10
+    assert preset.diorama_blur == 0
+    assert preset.diorama_direction is DioramaDirection.HORIZONTAL
+
+
+def test_diorama_round_trip_and_broken_direction(tmp_path):
+    path = tmp_path / "presets.json"
+    save_presets(path, [preset_from_settings("ミニチュア", LOOK)])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["presets"][0]["diorama_direction"] == "vertical"
+    assert data["presets"][0]["diorama_blur"] == 60
+
+    data["presets"].append({"name": "壊れた向き", "diorama_direction": "diagonal"})
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert [p.name for p in load_presets(path)] == ["ミニチュア"]
 
 
 def test_save_error(tmp_path):
