@@ -2,7 +2,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QColorDialog
 
 from image_editor.core.text import TextFont, TextPosition, TextSettings
-from image_editor.ui.text_dialog import TextDialog
+from image_editor.ui.text_dialog import DIALOG_WIDTH, TextDialog
 
 
 def test_defaults(qtbot):
@@ -74,3 +74,22 @@ def test_clear_button(qtbot):
         dialog.clear_button.click()
 
     assert blocker.args[0].text == ""
+
+
+def test_rows_do_not_overlap_when_opened(qtbot):
+    # 開いたときに行が詰まって、フォント欄が文字の入力欄に重ならない (#95)
+    dialog = TextDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.width() == DIALOG_WIDTH
+    widgets = [
+        dialog.text_edit,
+        dialog.font_combo,
+        dialog.size_spin,
+        dialog.color_button,
+        dialog.opacity_slider,
+        dialog.position_combo,
+    ]
+    for upper, lower in zip(widgets, widgets[1:], strict=False):
+        assert upper.geometry().bottom() < lower.geometry().top()
