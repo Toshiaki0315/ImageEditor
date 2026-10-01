@@ -2346,3 +2346,154 @@ def test_new_image_resets_text(loaded_window, tmp_path, questions):
     loaded_window.load_file(path)
 
     assert loaded_window.settings_panel.text_settings() == TextSettings()
+
+
+# --- 100% 表示 ----------------------------------------------------------------------
+
+
+def wait_zoom(qtbot, window):
+    qtbot.waitUntil(
+        lambda: window.drop_area.is_zoomed() and not window.is_zoom_rendering(), timeout=5000
+    )
+
+
+def test_zoom_menu_shortcuts(loaded_window):
+    assert loaded_window.zoom_action.shortcut() == QKeySequence("Ctrl+1")
+    assert loaded_window.fit_action.shortcut() == QKeySequence("Ctrl+0")
+    assert loaded_window.zoom_action.isEnabled()
+    assert not loaded_window.fit_action.isEnabled()
+
+
+def test_zoom_shows_saved_result(loaded_window, qtbot):
+    from image_editor.core.pipeline import apply_edits
+
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 200, 150))
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    panel.sharpen_slider.setValue(40)
+
+    loaded_window.zoom_action.trigger()
+
+    assert loaded_window.is_zoomed()
+    assert not loaded_window.drop_area.crop_overlay.is_active()  # ドラッグで見る場所を動かす
+    assert loaded_window.drop_area.badge_text() == "100% ・ 更新中…"
+    wait_zoom(qtbot, loaded_window)
+    assert loaded_window.drop_area.badge_text() == "100%"
+    expected = apply_edits(loaded_window.loaded.image, panel.settings())
+    shown = loaded_window.drop_area._zoom.toImage()
+    assert (shown.width(), shown.height()) == expected.size
+    assert shown.pixelColor(100, 100).getRgb()[:3] == expected.getpixel((100, 100))
+    assert loaded_window.fit_action.isEnabled()
+
+
+def test_zoom_follows_setting_changes(loaded_window, qtbot):
+    loaded_window.show_actual_size()
+    wait_zoom(qtbot, loaded_window)
+
+    loaded_window.settings_panel.saturation_slider.setValue(-100)
+
+    qtbot.waitUntil(
+        lambda: (
+            not loaded_window.is_zoom_rendering()
+            and len(set(loaded_window.drop_area._zoom.toImage().pixelColor(50, 50).getRgb()[:3]))
+            == 1
+        ),
+        timeout=5000,
+    )
+
+
+def test_old_zoom_result_is_ignored(loaded_window, qtbot):
+    loaded_window.show_actual_size()
+    old = loaded_window._zoom_generation
+    old_task = next(iter(loaded_window._zoom_tasks))
+    loaded_window._render_zoom()  # 設定が変わって依頼し直した
+
+    loaded_window._on_zoom_finished(old_task, Image.new("RGB", (5, 5)), old)
+
+    assert loaded_window.is_zoom_rendering()  # 古い結果では終わらない
+    wait_zoom(qtbot, loaded_window)
+
+
+def test_running_zoom_tasks_are_kept_until_finished(loaded_window, qtbot):
+    # 依頼し直しても、実行中の古いタスクは終わるまで保持する（片付けられると落ちる）
+    loaded_window.show_actual_size()
+    for _ in range(5):
+        loaded_window._render_zoom()
+    assert len(loaded_window._zoom_tasks) >= 1
+
+    qtbot.waitUntil(lambda: not loaded_window._zoom_tasks, timeout=10000)
+    assert not loaded_window.is_zoom_rendering()
+
+
+def test_zoom_compare_shows_before(loaded_window, qtbot):
+    loaded_window.settings_panel.saturation_slider.setValue(-100)
+    loaded_window.show_actual_size()
+    wait_zoom(qtbot, loaded_window)
+
+    loaded_window.set_comparing(True)
+
+    assert loaded_window.drop_area.badge_text().startswith("加工前 ・ 100%")
+    wait_zoom(qtbot, loaded_window)
+    assert loaded_window.drop_area._zoom.toImage().pixelColor(50, 50).getRgb()[:3] == (
+        220,
+        60,
+        30,
+    )
+    loaded_window.set_comparing(False)
+
+
+def test_fit_to_window_restores_view(loaded_window, qtbot):
+    loaded_window.show_actual_size()
+    wait_zoom(qtbot, loaded_window)
+
+    loaded_window.fit_action.trigger()
+
+    assert not loaded_window.is_zoomed()
+    assert not loaded_window.drop_area.is_zoomed()
+    assert loaded_window.drop_area.crop_overlay.is_active()
+    assert loaded_window.drop_area.badge_text() is None
+
+
+def test_double_click_in_zoom_returns_to_fit(loaded_window, qtbot):
+    loaded_window.show_actual_size()
+    wait_zoom(qtbot, loaded_window)
+
+    qtbot.mouseDClick(loaded_window.drop_area, Qt.MouseButton.LeftButton, pos=QPoint(50, 50))
+
+    assert not loaded_window.is_zoomed()
+
+
+def test_double_click_in_trim_view_zooms_at_point(loaded_window, qtbot):
+    panel = loaded_window.settings_panel
+    panel.set_crop(CropRect(0, 0, 400, 300))
+    panel.trim_button.click()
+    rect = loaded_window.drop_area.image_rect()
+    point = QPoint(round(rect.left() + rect.width() * 0.25), round(rect.center().y()))
+
+    qtbot.mouseDClick(loaded_window.drop_area, Qt.MouseButton.LeftButton, pos=point)
+
+    assert loaded_window.is_zoomed()
+    wait_zoom(qtbot, loaded_window)
+    center = loaded_window.drop_area.zoom_center()
+    assert center is not None
+    # 画像の左から 1/4 あたりが中央（表示より画像が小さいときは中央にそろう）
+    assert center[0] <= 400 * 0.5 + 2
+
+
+def test_double_click_in_whole_view_does_not_zoom(loaded_window, qtbot):
+    overlay = loaded_window.drop_area.crop_overlay
+    qtbot.mouseDClick(overlay, Qt.MouseButton.LeftButton, pos=QPoint(100, 100))
+    assert not loaded_window.is_zoomed()
+
+
+def test_load_leaves_zoom(loaded_window, qtbot, tmp_path, questions):
+    loaded_window.show_actual_size()
+    wait_zoom(qtbot, loaded_window)
+    path = tmp_path / "other.png"
+    Image.new("RGB", (40, 30)).save(path)
+
+    loaded_window.load_file(path)
+
+    assert not loaded_window.is_zoomed()
+    assert not loaded_window.drop_area.is_zoomed()
+    assert loaded_window.drop_area.crop_overlay.is_active()

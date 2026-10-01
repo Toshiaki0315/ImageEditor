@@ -3,7 +3,16 @@
 from pathlib import Path
 
 from PIL import Image
-from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QSettings,
+    Qt,
+    QThreadPool,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -53,7 +62,7 @@ from image_editor.ui.drop_area import DropArea
 from image_editor.ui.history import History
 from image_editor.ui.settings_panel import PanelState, SettingsPanel
 from image_editor.ui.text_dialog import TextDialog
-from image_editor.ui.worker import BatchTask, SaveTask
+from image_editor.ui.worker import BatchTask, SaveTask, ZoomTask
 
 WINDOW_TITLE = "Image Editor"
 INITIAL_SIZE = (1200, 800)
@@ -83,6 +92,8 @@ DEFAULT_BATCH_LONG_SIDE = 2048
 # 押している間だけ加工前の画像を表示するキー（JIS 配列の ¥ キーも同じ位置にある）
 COMPARE_KEYS = (Qt.Key.Key_Backslash, Qt.Key.Key_yen)
 COMPARE_BADGE_TEXT = "加工前"
+ZOOM_BADGE_TEXT = "100%"
+ZOOM_RENDERING_TEXT = "更新中…"
 
 
 # 保存の設定をアプリの環境設定に残すキー
@@ -181,6 +192,17 @@ class MainWindow(QMainWindow):
         self._history_timer.timeout.connect(self._commit_history)
         # 加工前の画像を表示中か（\ キーか「加工前」ボタンを押している間）
         self._comparing = False
+        # 100% 表示: 表示中か、最新の依頼の番号、最新の依頼を処理中か、表示の中央にしたい点
+        self._zoomed = False
+        self._zoom_generation = 0
+        self._zoom_pending = False
+        # 実行中のタスクはすべて終わるまで保持する（実行中に Python 側で片付けられると落ちる）
+        self._zoom_tasks: set[ZoomTask] = set()
+        self._zoom_center: tuple[float, float] | None = None
+        self._zoom_timer = QTimer(self)
+        self._zoom_timer.setSingleShot(True)
+        self._zoom_timer.setInterval(AUTO_PREVIEW_DELAY_MS)
+        self._zoom_timer.timeout.connect(self._render_zoom)
         # 表示中のプレビューのヒストグラム（保存される写真の分布）
         self._histogram: Histogram | None = None
 
@@ -215,6 +237,7 @@ class MainWindow(QMainWindow):
         self.text_dialog = TextDialog(self)
         self.text_dialog.settings_changed.connect(self.settings_panel.set_text_settings)
         self.settings_panel.text_dialog_requested.connect(self.open_text_dialog)
+        self.drop_area.double_clicked.connect(self._on_preview_double_clicked)
         # プリセット（名前付きの加工の組み合わせ）
         self._presets_path = default_presets_path()
         self.settings_panel.preset_save_requested.connect(self.save_preset_dialog)
@@ -312,6 +335,18 @@ class MainWindow(QMainWindow):
         self.histogram_action.toggled.connect(self._on_histogram_toggled)
         view_menu.addAction(self.histogram_action)
 
+        view_menu.addSeparator()
+        # 100% 表示は、原寸で処理した保存結果を画像 1px = 画面の 1 画素で見せる
+        self.zoom_action = QAction("100% で表示", self)
+        self.zoom_action.setShortcut(QKeySequence("Ctrl+1"))
+        self.zoom_action.triggered.connect(lambda: self.show_actual_size())
+        view_menu.addAction(self.zoom_action)
+
+        self.fit_action = QAction("画面に合わせる", self)
+        self.fit_action.setShortcut(QKeySequence("Ctrl+0"))
+        self.fit_action.triggered.connect(self.fit_to_window)
+        view_menu.addAction(self.fit_action)
+
     # --- 読み込み -------------------------------------------------------------
 
     def open_file_dialog(self) -> None:
@@ -342,7 +377,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._comparing = False
-        self.drop_area.set_badge(None)
+        self._leave_zoom()
         self.loaded = loaded
         self._preview, self._preview_factor = make_preview(loaded.image)
         self._saved_settings = None
@@ -434,8 +469,123 @@ class MainWindow(QMainWindow):
         if comparing == self._comparing:
             return
         self._comparing = comparing
-        self.drop_area.set_badge(COMPARE_BADGE_TEXT if comparing else None)
+        self._update_badge()
         self.update_preview()
+        if self._zoomed:
+            self._render_zoom()
+
+    # --- 100% 表示 ---------------------------------------------------------------
+
+    def show_actual_size(self, center: tuple[float, float] | None = None) -> None:
+        """100% 表示にする（原寸で処理した保存結果を、画像 1px = 画面の 1 画素で見せる）。
+
+        原寸の処理は裏で行い、終わるまでは前の表示のまま「更新中…」と出す。center は
+        表示の中央にしたい点（保存結果の画像の座標）。省略時は画像の中央。
+        """
+        if self.loaded is None:
+            return
+        self._zoomed = True
+        self._zoom_center = center
+        # 100% 表示の間はドラッグで見る場所を動かすので、範囲の選択は止める
+        self.drop_area.crop_overlay.set_active(False)
+        self._render_zoom()
+        self._update_actions()
+
+    def fit_to_window(self) -> None:
+        """画面に合わせた表示に戻す。"""
+        if not self._zoomed:
+            return
+        self._leave_zoom()
+        if self.loaded is not None:
+            self.drop_area.crop_overlay.set_active(not self.settings_panel.is_trim_view())
+        self._update_actions()
+
+    def is_zoomed(self) -> bool:
+        """100% 表示中かを返す。"""
+        return self._zoomed
+
+    def is_zoom_rendering(self) -> bool:
+        """100% 表示のための原寸の処理中かを返す。"""
+        return self._zoom_pending
+
+    def _leave_zoom(self) -> None:
+        self._zoomed = False
+        self._zoom_generation += 1  # 処理中の結果は使わない
+        self._zoom_pending = False
+        self._zoom_timer.stop()
+        self._zoom_center = None
+        self.drop_area.set_zoom_image(None)
+        self._update_badge()
+
+    def _render_zoom(self) -> None:
+        """今の設定（加工前の表示中なら加工前）で原寸の処理を裏で始める。"""
+        self._zoom_timer.stop()
+        if not self._zoomed or self.loaded is None:
+            return
+        settings = self.settings_panel.settings()
+        shown = self._before_settings(settings) if self._comparing else settings
+        self._zoom_generation += 1
+        task = ZoomTask(self.loaded.image, shown, self._zoom_generation)
+        task.setAutoDelete(False)  # 完了通知を受け取るまで Python 側で保持する
+        task.signals.finished.connect(
+            lambda image, generation, task=task: self._on_zoom_finished(task, image, generation)
+        )
+        task.signals.failed.connect(
+            lambda message, generation, task=task: self._on_zoom_failed(task, message, generation)
+        )
+        self._zoom_tasks.add(task)
+        self._zoom_pending = True
+        self._update_badge()
+        self._thread_pool.start(task)
+
+    def _on_zoom_finished(self, task: ZoomTask, image: Image.Image, generation: int) -> None:
+        self._zoom_tasks.discard(task)
+        if generation != self._zoom_generation:
+            return  # 古い依頼の結果（設定がその後変わった）
+        self._zoom_pending = False
+        if self._zoomed:
+            self.drop_area.set_zoom_image(image, self._zoom_center)
+            self._zoom_center = None
+        self._update_badge()
+
+    def _on_zoom_failed(self, task: ZoomTask, message: str, generation: int) -> None:
+        self._zoom_tasks.discard(task)
+        if generation != self._zoom_generation:
+            return
+        self._zoom_pending = False
+        self.fit_to_window()
+        self._show_error("100% で表示できません", message)
+
+    def _on_preview_double_clicked(self, point: QPointF) -> None:
+        """100% 表示中なら画面に合わせた表示に戻す。切り抜き表示中なら、その点を 100% で見る。
+
+        通常の表示ではクリックで範囲を解除するので、ダブルクリックでは切り替えない。
+        """
+        if self._zoomed:
+            self.fit_to_window()
+            return
+        if self.loaded is None or not self.settings_panel.is_trim_view():
+            return
+        rect = self.drop_area.image_rect()
+        if rect.isEmpty() or not rect.contains(point):
+            return
+        width, height = output_size(self.loaded.image.size, self.settings_panel.settings())
+        center = (
+            (point.x() - rect.x()) / rect.width() * width,
+            (point.y() - rect.y()) / rect.height() * height,
+        )
+        self.show_actual_size(center)
+
+    def _update_badge(self) -> None:
+        """左上の表示（「加工前」「100%」「更新中…」）をまとめて出す。"""
+        parts = []
+        if self._comparing:
+            parts.append(COMPARE_BADGE_TEXT)
+        if self._zoomed:
+            parts.append(ZOOM_BADGE_TEXT)
+            if self._zoom_pending:
+                parts.append(ZOOM_RENDERING_TEXT)
+        self.drop_area.set_badge(" ・ ".join(parts) if parts else None)
 
     def is_comparing(self) -> bool:
         """加工前の画像を表示中かを返す。"""
@@ -648,7 +798,7 @@ class MainWindow(QMainWindow):
             return
         self._auto_preview_timer.stop()
         self._comparing = False
-        self.drop_area.set_badge(None)
+        self._leave_zoom()
         self.loaded = None
         self._preview = None
         self._rendered_key = None
@@ -781,6 +931,10 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self, settings: EditSettings) -> None:
         # アンドゥ・プリセット・画像の読み込みで文字が変わったら、ダイアログの表示も合わせる
         self.text_dialog.set_settings(settings.text)
+        if self._zoomed:
+            # 100% 表示中は、変更が落ち着いてから原寸で処理し直す
+            self._zoom_timer.start()
+            self._update_badge()
         if self.loaded is not None and not self._restoring:
             # 続けて変えた分は、落ち着いてから 1 回の操作として履歴に積む
             self._history_timer.start()
@@ -844,7 +998,7 @@ class MainWindow(QMainWindow):
         """切り抜き後の表示ではドラッグでの範囲選択を止め、全体表示に戻したら再開する。"""
         if self.loaded is None:
             return
-        self.drop_area.crop_overlay.set_active(not trimmed)
+        self.drop_area.crop_overlay.set_active(not trimmed and not self._zoomed)
         self.update_preview()
 
     def _auto_preview(self) -> None:
@@ -889,6 +1043,8 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(enabled)
         self.open_action.setEnabled(not busy)
         self.text_action.setEnabled(self.loaded is not None)
+        self.zoom_action.setEnabled(self.loaded is not None and not self._zoomed)
+        self.fit_action.setEnabled(self._zoomed)
         self.batch_action.setEnabled(not busy)
         self.drop_area.setAcceptDrops(not busy)
         # まだ履歴に積んでいない変更があれば、それを元に戻せる
@@ -906,7 +1062,7 @@ class MainWindow(QMainWindow):
         # 保存中のファイルが途中で切れないよう、完了を待ってから閉じる（一括処理は中止を求める）
         if self._batch_task is not None:
             self._batch_task.cancel()
-        if self.is_busy():
+        if self.is_busy() or self._zoom_tasks:
             self._thread_pool.waitForDone()
         super().closeEvent(event)
 

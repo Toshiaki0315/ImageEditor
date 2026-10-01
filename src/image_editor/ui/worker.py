@@ -89,3 +89,33 @@ class BatchTask(QRunnable):
             cancelled=self._cancel.is_set,
         )
         self.signals.finished.emit(results, self._cancel.is_set() and len(results) < total)
+
+
+class ZoomSignals(QObject):
+    """ZoomTask の完了通知。"""
+
+    finished = pyqtSignal(object, int)  # 処理した画像 (PIL.Image), 番号
+    failed = pyqtSignal(str, int)  # エラーメッセージ, 番号
+
+
+class ZoomTask(QRunnable):
+    """100% 表示用に、原画像に編集を適用した（保存されるのと同じ）画像を作るタスク。
+
+    番号 (generation) を付けて返すので、受け取る側は最新の依頼の結果だけを使える。
+    """
+
+    def __init__(self, original: Image.Image, settings: EditSettings, generation: int) -> None:
+        super().__init__()
+        self._original = original.copy()
+        self._settings = settings
+        self._generation = generation
+        self.signals = ZoomSignals()
+
+    def run(self) -> None:
+        """ワーカースレッドで呼ばれる。結果はシグナルで返す。"""
+        try:
+            image = apply_edits(self._original, self._settings)
+        except Exception as e:  # 例外はスレッド外に出さず UI に通知する (NFR-04)
+            self.signals.failed.emit(f"{type(e).__name__}: {e}", self._generation)
+        else:
+            self.signals.finished.emit(image, self._generation)
