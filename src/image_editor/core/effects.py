@@ -8,6 +8,7 @@ import math
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
 from image_editor.core.filters import add_grain
+from image_editor.core.parallel import filter_image
 
 VIGNETTE_MIN = 0
 VIGNETTE_MAX = 100
@@ -95,7 +96,7 @@ def sharpen(
         percent=round(SHARPEN_MAX_PERCENT * amount / DETAIL_MAX),
         threshold=SHARPEN_THRESHOLD,
     )
-    return _merge_alpha(rgb.filter(mask), alpha)
+    return _merge_alpha(filter_image(rgb, mask), alpha)
 
 
 def blur(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
@@ -110,7 +111,7 @@ def blur(image: Image.Image, amount: int, reference: float | None = None) -> Ima
         return image.copy()
     rgb, alpha = _split_rgb(image)
     radius = _detail_radius(rgb, BLUR_MAX_RADIUS_RATIO * amount / DETAIL_MAX, reference)
-    return _merge_alpha(rgb.filter(ImageFilter.GaussianBlur(radius)), alpha)
+    return _merge_alpha(filter_image(rgb, ImageFilter.GaussianBlur(radius)), alpha)
 
 
 def denoise(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
@@ -126,7 +127,7 @@ def denoise(image: Image.Image, amount: int, reference: float | None = None) -> 
         return image.copy()
     rgb, alpha = _split_rgb(image)
     radius = _detail_radius(rgb, DENOISE_RADIUS_RATIO, reference)
-    smooth = rgb.filter(ImageFilter.GaussianBlur(radius))
+    smooth = filter_image(rgb, ImageFilter.GaussianBlur(radius))
     difference = ImageChops.difference(rgb, smooth).convert("L")
     strength = amount / DETAIL_MAX
     # 差が小さいほどぼかした画像を多く混ぜ、しきい値に向かってなめらかに元の画像に戻す
