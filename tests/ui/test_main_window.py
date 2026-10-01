@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
 )
 
+import image_editor.ui.main_window as main_window_module
 from image_editor.app import create_window
 from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
@@ -2692,3 +2693,59 @@ def test_diorama_undo(loaded_window):
     assert panel.settings().diorama_blur == 0
     loaded_window.redo()
     assert panel.settings().diorama_blur == 60
+
+
+# --- EXIF ----------------------------------------------------------------------------
+
+EXIF_TAB = 4
+
+
+def test_exif_tab_follows_loaded_image(window, tmp_path, exif_samples, questions):
+    gps = [
+        (1, "N"),
+        (2, ("rational", [(35, 1), (39, 1), (2187, 100)])),
+        (3, "E"),
+        (4, ("rational", [(139, 1), (45, 1), (30, 1)])),
+    ]
+    exif = exif_samples.build_exif(make="Canon", model="Canon EOS R5", gps=gps)
+    with_exif = tmp_path / "with_exif.jpg"
+    Image.new("RGB", (40, 30)).save(with_exif, exif=exif)
+    without_exif = tmp_path / "plain.png"
+    Image.new("RGB", (40, 30)).save(without_exif)
+    panel = window.settings_panel
+    assert not panel.is_exif_enabled()  # 画像がないとき
+
+    window.load_file(with_exif)
+    assert panel.is_exif_enabled()
+    info = panel.exif_view.info()
+    assert info.gps is not None
+    assert any(e.label == "Model（機種）" and e.value == "Canon EOS R5" for e in info.entries)
+    assert panel.exif_view.map_button.isEnabled()
+
+    panel.set_current_tab(EXIF_TAB)
+    window.load_file(without_exif)
+    assert not panel.is_exif_enabled()
+    assert panel.current_tab() == 0
+
+    window.load_file(with_exif)
+    window.reset()
+    assert not panel.is_exif_enabled()
+
+
+def test_broken_exif_does_not_block_loading(window, tmp_path, monkeypatch):
+    def broken(_loaded):
+        raise RuntimeError("壊れた EXIF")
+
+    monkeypatch.setattr(main_window_module, "exif_info_of", broken)
+    path = tmp_path / "photo.png"
+    Image.new("RGB", (10, 10)).save(path)
+
+    assert window.load_file(path)
+    assert not window.settings_panel.is_exif_enabled()
+
+
+def test_remembered_exif_tab_is_not_opened_without_image(qtbot, preferences):
+    preferences.setValue("panel/tab", EXIF_TAB)
+    widget = MainWindow()
+    qtbot.addWidget(widget)
+    assert widget.settings_panel.current_tab() == 0

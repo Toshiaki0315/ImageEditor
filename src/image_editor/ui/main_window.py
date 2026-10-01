@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from image_editor.core.exif_info import ExifInfo, exif_info_of
 from image_editor.core.histogram import Histogram
 from image_editor.core.io import (
     SUPPORTED_EXTENSIONS,
@@ -363,6 +364,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self.drop_area.crop_overlay.set_image_size(loaded.image.size)
         self.drop_area.crop_overlay.set_active(True)
         self.settings_panel.set_image_size(loaded.image.size)
+        self.settings_panel.set_exif_info(_exif_info(loaded))
         # 初期状態のプレビューとヒストグラムを描く
         self.update_preview()
         self._reset_history()
@@ -667,6 +669,14 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         if with_formats:
             message += f"\n\n対応形式: {FORMATS_TEXT}"
         QMessageBox.warning(self, title, message)
+
+
+def _exif_info(loaded: LoadedImage) -> ExifInfo | None:
+    """EXIF タブに出す情報。読めなくても画像の読み込みは続ける (NFR-04)。"""
+    try:
+        return exif_info_of(loaded)
+    except Exception:
+        return None
 
 
 def _first_extension(dialog_filter: str) -> str:

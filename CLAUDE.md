@@ -10,6 +10,7 @@
 - 言語: Python 3.11+
 - GUI: PyQt6
 - 画像処理: Pillow（必要になった場合のみ numpy を追加してよい。OpenCV は追加しない）
+- EXIF の表示: exifread（MakerNote は一部のメーカーを core/makernote.py で読む）
 - テスト: pytest / pytest-qt
 - Lint/Format: ruff
 - 構成管理: GitHub（Issue → ブランチ → PR）
@@ -39,6 +40,8 @@ src/image_editor/
     filters.py           # フィルター（PIL.Image -> PIL.Image の純粋関数）
     tone.py              # filters・effects に共通の部品（LUT・トーンカーブ・アルファの扱い・粒子）
     diorama.py           # ジオラマ風（ミニチュア風・ティルトシフト）の加工
+    exif_info.py         # EXIF・GPS・MakerNote を表示用に読む（exifread を使う）
+    makernote.py         # exifread が読めない MakerNote（ペンタックス・リコー・Samsung）を読む
     effects.py           # 露出・明るさ・コントラスト・色温度・彩度・ディテール（シャープ・ぼかし・ノイズ除去）・周辺減光・経年劣化
     transform.py         # 回転・反転・リサイズ・トリミング・縦横比
     shapes.py            # 形（角丸・円）の切り抜き
@@ -56,7 +59,7 @@ src/image_editor/
     window_presets.py    #   PresetMixin: プリセット・文字・透かしのダイアログ
     window_history.py    #   HistoryMixin: アンドゥ／リドゥ
     drop_area.py         # D&D + プレビュー表示（ジオラマのピントの帯のガイドも重ねる）
-    settings_panel.py    # 設定パネル（タブ: 加工／切り抜き／出力／ジオラマ）。役割ごとに Mixin を混ぜる
+    settings_panel.py    # 設定パネル（タブ: 加工／切り抜き／出力／ジオラマ／EXIF）。役割ごとに Mixin を混ぜる
     panel_crop.py        #   CropMixin: トリミング・縦横比・回転・反転
     panel_state.py       #   StateMixin: 状態の取り出し・戻し・プリセット・文字・加工のリセット
     panel_parts.py       #   定数・スライダーなどの部品・PanelState
@@ -66,6 +69,7 @@ src/image_editor/
     batch_dialog.py      # 一括処理の設定ダイアログ
     histogram_view.py    # プレビューに重ねるヒストグラム
     text_dialog.py       # 文字・透かしの設定ダイアログ
+    exif_view.py         # 「EXIF」タブの一覧（コピー・マップで開く）
     history.py           # アンドゥ／リドゥの履歴（Qt に依存しない）
 tests/
   core/                  # core は必ずユニットテストを書く

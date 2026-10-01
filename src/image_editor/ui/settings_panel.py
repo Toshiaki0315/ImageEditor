@@ -55,6 +55,7 @@ from image_editor.core.effects import (
     VIGNETTE_MAX,
     VIGNETTE_MIN,
 )
+from image_editor.core.exif_info import ExifInfo
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import (
@@ -81,6 +82,7 @@ from image_editor.core.transform import (
     OrientOp,
     fit_size,
 )
+from image_editor.ui.exif_view import ExifView
 from image_editor.ui.panel_crop import CropMixin
 from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外からも使う
     BLANK_TEXT,
@@ -94,6 +96,7 @@ from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外か�
     TAB_ADJUST_TEXT,
     TAB_CROP_TEXT,
     TAB_DIORAMA_TEXT,
+    TAB_EXIF_TEXT,
     TAB_OUTPUT_TEXT,
     TRIM_TEXT,
     Adjustment,
@@ -408,6 +411,13 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         diorama_form.addRow(diorama_note)
         self._diorama_page = tab_page(diorama_box)
         self.tabs.addTab(self._diorama_page, TAB_DIORAMA_TEXT)
+        # EXIF（表示だけ）。画像がない・EXIF がないときはタブをグレーアウトする
+        self.exif_view = ExifView()
+        exif_page = QWidget()
+        exif_layout = QVBoxLayout(exif_page)
+        exif_layout.setContentsMargins(0, PANEL_MARGIN, 0, 0)
+        exif_layout.addWidget(self.exif_view)
+        self._exif_tab = self.tabs.addTab(exif_page, TAB_EXIF_TEXT)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(PANEL_SPACING)
@@ -484,6 +494,8 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             else:
                 self._set_size_spins(self.base_size())
         self._set_controls_enabled(size is not None)
+        # EXIF は画像を読み込んだ側 (set_exif_info) が渡す。ここでは消しておく
+        self.set_exif_info(None)
         self._update_corner_enabled()
         self._update_aspect_controls()
         self._update_gps_enabled()
@@ -557,6 +569,21 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             self.keep_gps_check.setChecked(options.keep_gps)
         self._update_gps_enabled()
 
+    def set_exif_info(self, info: ExifInfo | None) -> None:
+        """「EXIF」タブに表示する EXIF を設定する。None・空ならタブをグレーアウトする。
+
+        グレーアウトしたタブを開いていたら「加工」タブに移る。
+        """
+        self.exif_view.set_info(info)
+        enabled = self.exif_view.info() is not None
+        if not enabled and self.tabs.currentIndex() == self._exif_tab:
+            self.tabs.setCurrentIndex(0)
+        self.tabs.setTabEnabled(self._exif_tab, enabled)
+
+    def is_exif_enabled(self) -> bool:
+        """「EXIF」タブを選べるか（EXIF のある画像を開いているか）。"""
+        return self.tabs.isTabEnabled(self._exif_tab)
+
     def is_diorama_tab(self) -> bool:
         """「ジオラマ」タブを開いているか（プレビューにピントの帯のガイドを出す）。"""
         return self.tabs.currentWidget() is self._diorama_page
@@ -566,8 +593,8 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         return self.tabs.currentIndex()
 
     def set_current_tab(self, index: int) -> None:
-        """タブを開く（範囲外の番号は無視する）。"""
-        if 0 <= index < self.tabs.count():
+        """タブを開く（範囲外の番号・グレーアウトしたタブは無視する）。"""
+        if 0 <= index < self.tabs.count() and self.tabs.isTabEnabled(index):
             self.tabs.setCurrentIndex(index)
 
     def set_busy(self, busy: bool) -> None:
