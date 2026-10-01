@@ -560,41 +560,20 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         # 表示に影響する設定が変わったときだけ描き直す
         if self.loaded is not None and self._preview_key(settings) != self._rendered_key:
             rendered = self._rendered_key
-            if rendered is not None and rendered[0] != settings.orientation:  # [0] は向き
+            if rendered is not None and rendered[0].orientation != settings.orientation:
                 # 向きが変わったら、範囲選択の座標系とずれないようすぐに描き直す
                 self.update_preview()
             else:
                 self._auto_preview_timer.start()
 
     def _preview_key(self, settings: EditSettings) -> tuple[object, ...]:
-        """プレビューの見た目を決める条件。サイズ変更は表示に反映しないので含めない。"""
-        trimmed = self.settings_panel.is_trim_view()
-        # トリミング範囲・フレーム・形（写真部分や円の比率への切り抜き）は、切り抜き表示中か
-        # 周辺減光があるときだけ見た目に影響する
-        affects_view = trimmed or bool(settings.vignette)
-        crop = settings.crop if affects_view else None
-        frame = settings.frame if affects_view else None
-        shape = (settings.shape, settings.corner_radius) if affects_view else None
-        return (
-            settings.orientation,
-            settings.filter,
-            settings.temperature,
-            settings.saturation,
-            settings.exposure,
-            settings.brightness,
-            settings.contrast,
-            settings.vignette,
-            settings.aging,
-            settings.sharpen,
-            settings.blur,
-            settings.denoise,
-            settings.text,
-            crop,
-            frame,
-            shape,
-            trimmed,
-            self._comparing,
-        )
+        """プレビューの見た目（ヒストグラムを含む）を決める条件。
+
+        描画は設定のほぼすべてを使う（トリミング範囲・フレーム・形・角丸はヒストグラムと
+        文字の位置に、出力サイズはシャープの効き方に効く）ので、設定全体を条件にする。
+        項目を手で選ぶと、項目を足したときに描き直しが漏れる。
+        """
+        return (settings, self.settings_panel.is_trim_view(), self._comparing)
 
     def _on_trim_view_toggled(self, trimmed: bool) -> None:
         """切り抜き後の表示ではドラッグでの範囲選択を止め、全体表示に戻したら再開する。"""
