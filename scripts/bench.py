@@ -52,6 +52,7 @@ HEAVY_SETTINGS = EditSettings(
     sharpen=50,
     blur=10,
     denoise=50,
+    diorama_blur=80,
     filter=FilterType.HDR,
     vignette=50,
     aging=30,

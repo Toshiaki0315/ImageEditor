@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from image_editor.app import create_window
+from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import SaveOptions, load_image
@@ -2605,3 +2606,89 @@ def test_save_dialog_rejects_heic_extension(window, tmp_path, monkeypatch, warni
 
     assert warnings and "対応していない拡張子です: .heic" in warnings[-1][1]
     assert "HEIC / HEIF は読み込みのみ" in warnings[-1][1]
+
+
+# --- ジオラマ ---------------------------------------------------------------------
+
+DIORAMA_TAB = 3
+
+
+def test_diorama_guide_only_on_diorama_tab(loaded_window):
+    panel = loaded_window.settings_panel
+    assert loaded_window.drop_area.diorama_guide() is None
+
+    panel.set_current_tab(DIORAMA_TAB)
+    guide = loaded_window.drop_area.diorama_guide()
+    assert guide is not None
+    assert guide.horizontal
+    assert guide.area == (0.0, 0.0, 1.0, 1.0)
+    # 既定は位置 50%・幅 20%: くっきり残すのは 40〜60%
+    assert [round(f, 3) for f, solid in guide.lines() if solid] == [0.4, 0.6]
+
+    panel.set_current_tab(0)
+    assert loaded_window.drop_area.diorama_guide() is None
+
+
+def test_diorama_guide_follows_settings_and_crop(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.set_current_tab(DIORAMA_TAB)
+
+    panel.set_crop(CropRect(100, 0, 200, 150))
+    combo = panel.diorama_direction_combo
+    combo.setCurrentIndex(combo.findData(DioramaDirection.VERTICAL))
+    panel.diorama_position_slider.setValue(25)
+
+    guide = loaded_window.drop_area.diorama_guide()
+    assert not guide.horizontal
+    assert guide.area == (0.25, 0.0, 0.5, 0.5)  # 400×300 の画像の中の切り抜く範囲
+    sharp = [f for f, solid in guide.lines() if solid]
+    # 写真（横 0.25〜0.75）の 15〜35% の位置
+    assert sharp == pytest.approx([0.25 + 0.15 * 0.5, 0.25 + 0.35 * 0.5])
+
+
+def test_diorama_guide_in_trim_view_excludes_frame(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.frame_combo.setCurrentIndex(panel.frame_combo.findData(FrameType.POLAROID))
+    panel.set_trim_view(True)
+    panel.set_current_tab(DIORAMA_TAB)
+
+    left, top, width, height = loaded_window.drop_area.diorama_guide().area
+    # ポラロイドは下の余白が広いので、写真は上寄り
+    assert left > 0 and top > 0
+    assert top + height < 1 - top
+
+
+def test_diorama_guide_hidden_while_comparing(loaded_window):
+    loaded_window.settings_panel.set_current_tab(DIORAMA_TAB)
+    loaded_window.set_comparing(True)
+    assert loaded_window.drop_area.diorama_guide() is None
+    loaded_window.set_comparing(False)
+    assert loaded_window.drop_area.diorama_guide() is not None
+
+
+def test_diorama_guide_hidden_after_reset(loaded_window, questions):
+    loaded_window.settings_panel.set_current_tab(DIORAMA_TAB)
+    loaded_window.reset()
+    assert loaded_window.drop_area.diorama_guide() is None
+
+
+def test_diorama_changes_preview_and_saved_image(loaded_window, qtbot, tmp_path):
+    before = loaded_window.drop_area._source.copy()
+    loaded_window.settings_panel.diorama_blur_slider.setValue(100)
+    loaded_window.update_preview()
+    assert loaded_window.drop_area._source != before  # 色の境目がぼける
+
+    out = tmp_path / "diorama.png"
+    save_and_wait(qtbot, loaded_window, out)
+    plain = load_image(tmp_path / "photo.png").image
+    with Image.open(out) as saved:
+        assert saved.tobytes() != plain.convert(saved.mode).tobytes()
+
+
+def test_diorama_undo(loaded_window):
+    panel = loaded_window.settings_panel
+    panel.diorama_blur_slider.setValue(60)
+    loaded_window.undo()
+    assert panel.settings().diorama_blur == 0
+    loaded_window.redo()
+    assert panel.settings().diorama_blur == 60

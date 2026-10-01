@@ -197,6 +197,8 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         self.settings_panel.tab_changed.connect(
             lambda index: self._preferences.setValue(PREF_PANEL_TAB, index)
         )
+        # 「ジオラマ」タブを開いている間だけ、プレビューにピントの帯のガイドを出す
+        self.settings_panel.tab_changed.connect(lambda _: self._update_diorama_guide())
         self.settings_panel.compare_toggled.connect(self.set_comparing)
         # 文字・透かしのダイアログ（開いたまま調整でき、変更はすぐ設定に反映する）
         self.text_dialog = TextDialog(self)
@@ -555,6 +557,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         if image_size is not None:
             area = effective_crop(image_size, settings.crop, settings.frame, settings.shape)
         overlay.set_shape(settings.shape, settings.corner_radius, area)
+        self._update_diorama_guide()
         if not self.is_saving():
             self._update_status()
         # 表示に影響する設定が変わったときだけ描き直す
@@ -580,6 +583,7 @@ class MainWindow(ViewMixin, BatchMixin, PresetMixin, HistoryMixin, QMainWindow):
         if self.loaded is None:
             return
         self.drop_area.crop_overlay.set_active(not trimmed and not self._zoomed)
+        self._update_diorama_guide()
         self.update_preview()
 
     def _auto_preview(self) -> None:

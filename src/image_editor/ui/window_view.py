@@ -11,11 +11,15 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QKeyEvent
 
+from image_editor.core.diorama import DioramaDirection, diorama_band
+from image_editor.core.frames import frame_margins
 from image_editor.core.pipeline import (
     EditSettings,
     effective_crop,
     output_size,
 )
+from image_editor.core.transform import fit_size
+from image_editor.ui.drop_area import DioramaGuide
 from image_editor.ui.worker import ZoomTask
 
 # 押している間だけ加工前の画像を表示するキー（JIS 配列の ¥ キーも同じ位置にある）
@@ -45,6 +49,43 @@ class ViewMixin:
         show = self.is_histogram_shown() and self.loaded is not None
         self.drop_area.set_histogram(self._histogram if show else None)
 
+    def _update_diorama_guide(self) -> None:
+        """「ジオラマ」タブを開いている間、プレビューにピントの帯のガイドを重ねる。
+
+        加工前の表示中は出さない。ぼかしが 0 でも、帯の位置を決めやすいよう出す。
+        """
+        guide = None
+        if self.loaded is not None and self.settings_panel.is_diorama_tab() and not self._comparing:
+            settings = self.settings_panel.settings()
+            guide = DioramaGuide(
+                area=self._photo_area(settings),
+                horizontal=settings.diorama_direction is DioramaDirection.HORIZONTAL,
+                band=diorama_band(settings.diorama()),
+            )
+        self.drop_area.set_diorama_guide(guide)
+
+    def _photo_area(self, settings: EditSettings) -> tuple[float, float, float, float]:
+        """表示している画像の中の、写真（ジオラマの位置の基準）の範囲を割合で返す。
+
+        全体表示では実際に切り抜く範囲（なければ全体）。切り抜き表示と 100% 表示では、
+        フレームの余白を除いた写真の部分。
+        """
+        assert self.loaded is not None
+        size = settings.orientation.size(self.loaded.image.size)
+        rect = effective_crop(size, settings.crop, settings.frame, settings.shape)
+        if not self._zoomed and not self.settings_panel.is_trim_view():
+            if rect is None:
+                return (0.0, 0.0, 1.0, 1.0)
+            width, height = size
+            return (rect.x / width, rect.y / height, rect.width / width, rect.height / height)
+        photo = (rect.width, rect.height) if rect is not None else size
+        if self._zoomed:
+            # 100% 表示は保存結果（リサイズ後）。切り抜き表示はリサイズを反映しない
+            photo = fit_size(photo, settings.width, settings.height, settings.keep_aspect)
+        left, top, right, bottom = frame_margins(settings.frame, photo)
+        width, height = photo[0] + left + right, photo[1] + top + bottom
+        return (left / width, top / height, photo[0] / width, photo[1] / height)
+
     def set_comparing(self, comparing: bool) -> None:
         """加工前の画像の表示を切り替える（押している間だけ True にする）。
 
@@ -56,6 +97,7 @@ class ViewMixin:
             return
         self._comparing = comparing
         self._update_badge()
+        self._update_diorama_guide()
         self.update_preview()
         if self._zoomed:
             self._render_zoom()
@@ -73,6 +115,7 @@ class ViewMixin:
         # 100% 表示の間はドラッグで見る場所を動かすので、範囲の選択は止める
         self.drop_area.crop_overlay.set_active(False)
         self._render_zoom()
+        self._update_diorama_guide()
         self._update_actions()
 
     def fit_to_window(self) -> None:
@@ -82,6 +125,7 @@ class ViewMixin:
         self._leave_zoom()
         if self.loaded is not None:
             self.drop_area.crop_overlay.set_active(not self.settings_panel.is_trim_view())
+        self._update_diorama_guide()
         self._update_actions()
 
     def is_zoomed(self) -> bool:
