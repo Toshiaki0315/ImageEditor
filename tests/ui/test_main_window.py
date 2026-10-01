@@ -21,6 +21,7 @@ from image_editor.core.frames import FrameType
 from image_editor.core.io import SaveOptions, load_image
 from image_editor.core.pipeline import EditSettings
 from image_editor.core.shapes import ShapeType
+from image_editor.core.text import TextPosition, TextSettings
 from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
@@ -649,8 +650,8 @@ def test_auto_preview_is_debounced(loaded_window, qtbot, monkeypatch):
     assert len(calls) == 1
 
 
-def test_no_redraw_when_only_crop_or_size_changes(loaded_window, qtbot, monkeypatch):
-    # プレビューに反映されるのはフィルターだけなので、範囲やサイズの変更では描き直さない
+def test_crop_and_size_changes_redraw_once(loaded_window, qtbot, monkeypatch):
+    # 範囲・出力サイズもヒストグラム・文字の位置・シャープに効くので描き直す（続けた変更は 1 回）
     calls = []
     original = loaded_window.update_preview
     monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
@@ -660,7 +661,78 @@ def test_no_redraw_when_only_crop_or_size_changes(loaded_window, qtbot, monkeypa
     panel.width_spin.setValue(50)
     qtbot.wait(500)
 
+    assert calls == [1]
+
+
+def test_no_redraw_when_only_save_options_change(loaded_window, qtbot, monkeypatch):
+    # 保存の設定（JPEG 品質・EXIF）はプレビューに関係しないので描き直さない
+    calls = []
+    original = loaded_window.update_preview
+    monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
+    panel = loaded_window.settings_panel
+
+    panel.quality_slider.setValue(50)
+    panel.keep_exif_check.setChecked(False)
+    qtbot.wait(500)
+
     assert calls == []
+
+
+def _luma_levels(window) -> set[int]:
+    histogram = window.drop_area.histogram_view.histogram()
+    return {level for level, count in enumerate(histogram.luma) if count}
+
+
+def test_histogram_follows_crop_without_vignette(loaded_window, qtbot):
+    # 周辺減光がなくても、範囲を変えたらヒストグラムは切り抜く範囲の分布になる (#101)
+    assert len(_luma_levels(loaded_window)) == 2  # 左の赤と右の青
+    view = loaded_window.drop_area.histogram_view
+
+    loaded_window.settings_panel.set_crop(CropRect(0, 0, 150, 300))  # 赤の部分だけ
+
+    qtbot.waitUntil(lambda: view.histogram().total() == 150 * 300, timeout=2000)
+    assert len(_luma_levels(loaded_window)) == 1
+
+
+def test_histogram_follows_corner_radius(loaded_window, qtbot):
+    # 角丸の外側は数えないので、半径を変えたら数える画素も変わる (#101)
+    panel = loaded_window.settings_panel
+    view = loaded_window.drop_area.histogram_view
+    panel.shape_combo.setCurrentIndex(panel.shape_combo.findData(ShapeType.ROUNDED))
+    panel.corner_slider.setValue(10)
+    qtbot.waitUntil(lambda: view.histogram().total() < 400 * 300, timeout=2000)
+    before = view.histogram().total()
+
+    panel.corner_slider.setValue(40)
+
+    qtbot.waitUntil(lambda: view.histogram().total() < before, timeout=2000)
+
+
+def test_text_follows_crop_in_full_view(loaded_window, qtbot):
+    # 全体表示の文字は切り抜く範囲に描くので、範囲を動かしたら描き直す (#101)
+    panel = loaded_window.settings_panel
+    panel.set_text_settings(TextSettings(text="A", position=TextPosition.TOP_LEFT, size=20))
+    panel.set_crop(CropRect(0, 0, 150, 150))
+    loaded_window.update_preview()
+    before = loaded_window.drop_area._source.copy()
+
+    panel.set_crop(CropRect(200, 100, 150, 150))
+
+    qtbot.waitUntil(lambda: loaded_window.drop_area._source != before, timeout=2000)
+
+
+def test_sharpen_follows_output_size(loaded_window, qtbot, monkeypatch):
+    # シャープの効き方は保存する写真の大きさから換算するので、出力サイズでも描き直す (#101)
+    panel = loaded_window.settings_panel
+    panel.sharpen_slider.setValue(80)
+    loaded_window.update_preview()
+    calls = []
+    original = loaded_window.update_preview
+    monkeypatch.setattr(loaded_window, "update_preview", lambda: (calls.append(1), original()))
+
+    panel.width_spin.setValue(100)
+
+    qtbot.waitUntil(lambda: calls == [1], timeout=2000)
 
 
 def test_save_runs_in_worker_thread(loaded_window, qtbot, tmp_path, monkeypatch):
@@ -2217,7 +2289,6 @@ def test_histogram_updates_with_adjustments(loaded_window, qtbot):
 
 def test_histogram_counts_crop_range(loaded_window, qtbot):
     loaded_window.settings_panel.set_crop(CropRect(0, 0, 100, 100))
-    loaded_window.settings_panel.vignette_slider.setValue(1)  # 範囲が見た目に影響する設定
     loaded_window.update_preview()
     assert loaded_window.drop_area.histogram_view.histogram().total() == 100 * 100
 
