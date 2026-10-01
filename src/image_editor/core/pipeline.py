@@ -121,9 +121,8 @@ def render_preview_with_histogram(
             rendered = effects.vignette(rendered, settings.vignette)
         else:
             # トリミング範囲の中心を基準に暗くし、元の位置に戻す
-            box = (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)
-            region = effects.vignette(rendered.crop(box), settings.vignette)
-            rendered.paste(region, box[:2])
+            region = effects.vignette(rendered.crop(rect.box), settings.vignette)
+            rendered.paste(region, (rect.x, rect.y))
     if settings.aging:
         # 経年劣化は画素ごとの色の変化と固定模様の粒子なので、表示範囲全体にかける
         rendered = effects.aging(rendered, settings.aging)
@@ -134,11 +133,7 @@ def render_preview_with_histogram(
         rendered = _apply_shape_and_frame(rendered, settings)
     elif not settings.text.is_empty():
         # 全体表示ではフレームを出さないので、写真の上の文字だけを切り抜く範囲に描く
-        box = (
-            (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height)
-            if rect is not None
-            else None
-        )
+        box = rect.box if rect is not None else None
         if (
             settings.text.position is not TextPosition.FRAME_MARGIN
             or settings.frame is FrameType.NONE
@@ -193,8 +188,7 @@ def scale_settings(settings: EditSettings, factor: float) -> EditSettings:
         rect = settings.crop
         # 左上と右下をそれぞれ換算し、端がずれないようにする
         left, top = _scale(rect.x, factor), _scale(rect.y, factor)
-        right = _scale(rect.x + rect.width, factor)
-        bottom = _scale(rect.y + rect.height, factor)
+        right, bottom = _scale(rect.right, factor), _scale(rect.bottom, factor)
         width = max(1, right - left) if rect.width > 0 else rect.width
         height = max(1, bottom - top) if rect.height > 0 else rect.height
         crop = CropRect(left, top, width, height)

@@ -7,8 +7,8 @@ import math
 
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
-from image_editor.core.filters import add_grain
 from image_editor.core.parallel import filter_image
+from image_editor.core.tone import add_grain, apply_curve, clip_table, map_rgb, smoothstep
 
 VIGNETTE_MIN = 0
 VIGNETTE_MAX = 100
@@ -90,13 +90,12 @@ def sharpen(
     _check_amount("シャープ", amount, DETAIL_MIN, DETAIL_MAX)
     if amount == 0:
         return image.copy()
-    rgb, alpha = _split_rgb(image)
     mask = ImageFilter.UnsharpMask(
-        radius=_sharpen_radius(min(rgb.size) if reference is None else reference, output),
+        radius=_sharpen_radius(min(image.size) if reference is None else reference, output),
         percent=round(SHARPEN_MAX_PERCENT * amount / DETAIL_MAX),
         threshold=SHARPEN_THRESHOLD,
     )
-    return _merge_alpha(filter_image(rgb, mask), alpha)
+    return map_rgb(image, lambda rgb: filter_image(rgb, mask))
 
 
 def blur(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
@@ -109,9 +108,8 @@ def blur(image: Image.Image, amount: int, reference: float | None = None) -> Ima
     _check_amount("ぼかし", amount, DETAIL_MIN, DETAIL_MAX)
     if amount == 0:
         return image.copy()
-    rgb, alpha = _split_rgb(image)
-    radius = _detail_radius(rgb, BLUR_MAX_RADIUS_RATIO * amount / DETAIL_MAX, reference)
-    return _merge_alpha(filter_image(rgb, ImageFilter.GaussianBlur(radius)), alpha)
+    radius = _detail_radius(image, BLUR_MAX_RADIUS_RATIO * amount / DETAIL_MAX, reference)
+    return map_rgb(image, lambda rgb: filter_image(rgb, ImageFilter.GaussianBlur(radius)))
 
 
 def denoise(image: Image.Image, amount: int, reference: float | None = None) -> Image.Image:
@@ -125,16 +123,19 @@ def denoise(image: Image.Image, amount: int, reference: float | None = None) -> 
     _check_amount("ノイズ除去", amount, DETAIL_MIN, DETAIL_MAX)
     if amount == 0:
         return image.copy()
-    rgb, alpha = _split_rgb(image)
-    radius = _detail_radius(rgb, DENOISE_RADIUS_RATIO, reference)
-    smooth = filter_image(rgb, ImageFilter.GaussianBlur(radius))
-    difference = ImageChops.difference(rgb, smooth).convert("L")
+    radius = _detail_radius(image, DENOISE_RADIUS_RATIO, reference)
     strength = amount / DETAIL_MAX
     # 差が小さいほどぼかした画像を多く混ぜ、しきい値に向かってなめらかに元の画像に戻す
-    weight = difference.point(
-        [round(255 * strength * _smooth_falloff(v / DENOISE_EDGE_THRESHOLD)) for v in range(256)]
-    )
-    return _merge_alpha(Image.composite(smooth, rgb, weight), alpha)
+    weights = [
+        round(255 * strength * _smooth_falloff(v / DENOISE_EDGE_THRESHOLD)) for v in range(256)
+    ]
+
+    def process(rgb: Image.Image) -> Image.Image:
+        smooth = filter_image(rgb, ImageFilter.GaussianBlur(radius))
+        weight = ImageChops.difference(rgb, smooth).convert("L").point(weights)
+        return Image.composite(smooth, rgb, weight)
+
+    return map_rgb(image, process)
 
 
 def _sharpen_radius(reference: float, output: float | None) -> float:
@@ -146,24 +147,12 @@ def _sharpen_radius(reference: float, output: float | None) -> float:
 
 def _smooth_falloff(t: float) -> float:
     """t = 0 で 1、t = 1 以上で 0 になり、その間はなめらかに下がる（smoothstep の逆）。"""
-    t = min(max(t, 0.0), 1.0)
-    return 1 - t * t * (3 - 2 * t)
+    return 1 - smoothstep(min(max(t, 0.0), 1.0))
 
 
 def _detail_radius(image: Image.Image, ratio: float, reference: float | None) -> float:
     """基準の長さ（省略時は画像の短辺）に比例した半径（px）。"""
     return (min(image.size) if reference is None else reference) * ratio
-
-
-def _split_rgb(image: Image.Image) -> tuple[Image.Image, Image.Image | None]:
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    return image.convert("RGB"), alpha
-
-
-def _merge_alpha(rgb: Image.Image, alpha: Image.Image | None) -> Image.Image:
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
 
 
 def vignette(image: Image.Image, amount: int) -> Image.Image:
@@ -175,25 +164,19 @@ def vignette(image: Image.Image, amount: int) -> Image.Image:
     if amount == 0:
         return image.copy()
 
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = image.convert("RGB")
-
     # 中心からの距離の放射状グラデーションを画像の大きさに引き伸ばす（縦横比に合わせて楕円になる）
-    distance = Image.radial_gradient("L").resize(rgb.size, Image.Resampling.BILINEAR)
+    distance = Image.radial_gradient("L").resize(image.size, Image.Resampling.BILINEAR)
     strength = VIGNETTE_MAX_DARKEN * amount / VIGNETTE_MAX
     multiplier = distance.point([_brightness(v / _GRADIENT_EDGE, strength) for v in range(256)])
-    result = ImageChops.multiply(rgb, Image.merge("RGB", (multiplier,) * 3))
-
-    if alpha is not None:
-        result.putalpha(alpha)
-    return result
+    return map_rgb(
+        image, lambda rgb: ImageChops.multiply(rgb, Image.merge("RGB", (multiplier,) * 3))
+    )
 
 
 def _brightness(distance: float, strength: float) -> int:
     """中心からの距離（端 = 1）に対する明るさの倍率 (0〜255 = 0〜1 倍)。滑らかに暗くなる。"""
     t = min(max((distance - VIGNETTE_START) / (_CORNER - VIGNETTE_START), 0.0), 1.0)
-    smooth = t * t * (3 - 2 * t)
-    return round(255 * (1 - strength * smooth))
+    return round(255 * (1 - strength * smoothstep(t)))
 
 
 def aging(image: Image.Image, amount: int) -> Image.Image:
@@ -208,33 +191,24 @@ def aging(image: Image.Image, amount: int) -> Image.Image:
         return image.copy()
 
     t = amount / AGING_MAX
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = ImageEnhance.Color(image.convert("RGB")).enhance(1 - AGING_MAX_DESATURATE * t)
-
     # フェードと色かぶりを 1 回の LUT でかける
     black = AGING_MAX_BLACK * t
     white = 255 - AGING_MAX_WHITE_DROP * t
     faded = [black + v * (white - black) / 255 for v in range(256)]
     tints = [1 + (factor - 1) * t for factor in AGING_MAX_TINT]
-    rgb = rgb.point(_clip_table([value * tint for tint in tints for value in faded]))
-
+    table = clip_table(value * tint for tint in tints for value in faded)
     grain = round(AGING_MAX_GRAIN * t)
-    if grain:
-        rgb = add_grain(rgb, grain, AGING_GRAIN_SEED)
 
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    def process(rgb: Image.Image) -> Image.Image:
+        rgb = ImageEnhance.Color(rgb).enhance(1 - AGING_MAX_DESATURATE * t).point(table)
+        return add_grain(rgb, grain, AGING_GRAIN_SEED) if grain else rgb
+
+    return map_rgb(image, process)
 
 
 def _check_amount(name: str, amount: int, minimum: int, maximum: int) -> None:
     if not minimum <= amount <= maximum:
         raise ValueError(f"{name}は {minimum}〜{maximum} で指定してください: {amount}")
-
-
-def _clip_table(values: list[float]) -> list[int]:
-    """四捨五入して 0〜255 にクリップしたルックアップテーブルを返す。"""
-    return [min(255, max(0, int(v + 0.5))) for v in values]
 
 
 def color_temperature(image: Image.Image, kelvin: int) -> Image.Image:
@@ -247,15 +221,8 @@ def color_temperature(image: Image.Image, kelvin: int) -> Image.Image:
     if kelvin == TEMPERATURE_NEUTRAL:
         return image.copy()
 
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    tables: list[float] = []
-    for multiplier in temperature_multipliers(kelvin):
-        tables += [v * multiplier for v in range(256)]
-    rgb = image.convert("RGB").point(_clip_table(tables))
-
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    table = clip_table(v * m for m in temperature_multipliers(kelvin) for v in range(256))
+    return map_rgb(image, lambda rgb: rgb.point(table))
 
 
 def temperature_multipliers(kelvin: int) -> tuple[float, float, float]:
@@ -300,11 +267,7 @@ def saturation(image: Image.Image, amount: int) -> Image.Image:
     if amount == 0:
         return image.copy()
 
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = ImageEnhance.Color(image.convert("RGB")).enhance(1 + amount / SATURATION_MAX)
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    return map_rgb(image, lambda rgb: ImageEnhance.Color(rgb).enhance(1 + amount / SATURATION_MAX))
 
 
 def brightness(image: Image.Image, amount: int) -> Image.Image:
@@ -319,12 +282,7 @@ def brightness(image: Image.Image, amount: int) -> Image.Image:
         return image.copy()
 
     gamma = BRIGHTNESS_GAMMA_BASE ** (-amount / 50)
-    curve = _clip_table([255 * (v / 255) ** gamma for v in range(256)])
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = image.convert("RGB").point(curve * 3)
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    return apply_curve(image, lambda x: x**gamma)
 
 
 def contrast(image: Image.Image, amount: int) -> Image.Image:
@@ -353,12 +311,7 @@ def contrast(image: Image.Image, amount: int) -> Image.Image:
         def curve(x: float) -> float:
             return 0.5 + (x - 0.5) * slope
 
-    table = _clip_table([255 * curve(v / 255) for v in range(256)])
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = image.convert("RGB").point(table * 3)
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    return apply_curve(image, curve)
 
 
 def exposure(image: Image.Image, ev: float) -> Image.Image:
@@ -374,14 +327,7 @@ def exposure(image: Image.Image, ev: float) -> Image.Image:
         return image.copy()
 
     gain = 2.0**ev
-    table = _clip_table(
-        [255 * _linear_to_srgb(min(1.0, _srgb_to_linear(v / 255) * gain)) for v in range(256)]
-    )
-    alpha = image.getchannel("A") if image.mode == "RGBA" else None
-    rgb = image.convert("RGB").point(table * 3)
-    if alpha is not None:
-        rgb.putalpha(alpha)
-    return rgb
+    return apply_curve(image, lambda x: _linear_to_srgb(min(1.0, _srgb_to_linear(x) * gain)))
 
 
 def _srgb_to_linear(value: float) -> float:

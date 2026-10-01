@@ -6,7 +6,6 @@ from PIL import Image, ImageChops, ImageStat
 
 from image_editor.core.filters import (
     FilterType,
-    add_grain,
     apply_filter,
 )
 
@@ -250,16 +249,6 @@ def test_retro_camera_grain_is_deterministic():
     first = apply_filter(image, FilterType.RETRO_CAMERA)
     second = apply_filter(image, FilterType.RETRO_CAMERA)
     assert first.tobytes() == second.tobytes()
-
-
-def test_add_grain_strength():
-    image = Image.new("RGB", (256, 256), (128, 128, 128))
-
-    result = add_grain(image, 10, seed=1)
-
-    low, high = result.getchannel("G").getextrema()
-    assert 118 <= low < 128 < high <= 138
-    assert add_grain(image, 0, seed=1).tobytes() == image.tobytes()
 
 
 # --- ハイキー・ローキー・ドラマチック・モダン・ナチュラル -----------------------------

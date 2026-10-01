@@ -32,11 +32,11 @@ PLACEHOLDER_TEXT = "ここに画像をドロップしてください"
 MARGIN = 16
 BORDER_RADIUS = 12
 HIGHLIGHT_FILL_ALPHA = 40
-# 透過部分の市松模様（1 マスの大きさは論理ピクセル）
 BADGE_MARGIN = 8  # 画像の左上から「加工前」などの表示までの間隔
 BADGE_STYLE = (
     "QLabel { background: rgba(0, 0, 0, 160); color: white; border-radius: 4px; padding: 2px 8px; }"
 )
+# 透過部分の市松模様（1 マスの大きさは論理ピクセル）
 CHECKER_SIZE = 8
 CHECKER_LIGHT = QColor(255, 255, 255)
 CHECKER_DARK = QColor(204, 204, 204)

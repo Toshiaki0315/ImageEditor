@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QInputDialog,
-    QMessageBox,
-)
+from PyQt6.QtWidgets import QInputDialog
 
 from image_editor.core.presets import (
     Preset,
@@ -56,30 +53,17 @@ class PresetMixin:
         name = normalize_name(text)
         if not ok or not name:
             return
-        if any(preset.name == name for preset in presets):
-            answer = QMessageBox.question(
-                self,
-                "プリセットを保存",
-                f"プリセット「{name}」はすでにあります。上書きしますか？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+        if any(preset.name == name for preset in presets) and not self._confirm(
+            "プリセットを保存", f"プリセット「{name}」はすでにあります。上書きしますか？"
+        ):
+            return
         preset = preset_from_settings(name, self.settings_panel.settings())
         if self._store_presets(upsert_preset(presets, preset)):
             self._update_status(f"プリセット「{name}」を保存しました")
 
     def delete_preset(self, name: str) -> None:
         """プリセットを確認のうえ削除する。"""
-        answer = QMessageBox.question(
-            self,
-            "プリセットを削除",
-            f"プリセット「{name}」を削除しますか？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not self._confirm("プリセットを削除", f"プリセット「{name}」を削除しますか？"):
             return
         if self._store_presets(remove_preset(self.settings_panel.presets(), name)):
             self._update_status(f"プリセット「{name}」を削除しました")

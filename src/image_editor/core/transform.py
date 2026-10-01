@@ -20,6 +20,21 @@ class CropRect:
     width: int
     height: int
 
+    @property
+    def right(self) -> int:
+        """右端の x 座標（範囲に含まない）。"""
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> int:
+        """下端の y 座標（範囲に含まない）。"""
+        return self.y + self.height
+
+    @property
+    def box(self) -> tuple[int, int, int, int]:
+        """Pillow の crop などに渡す (左, 上, 右, 下)。"""
+        return (self.x, self.y, self.right, self.bottom)
+
 
 class AspectRatio(Enum):
     """トリミングの縦横比の選択肢。値は横向きのときの (幅, 高さ)。"""
@@ -61,8 +76,8 @@ def clamp_crop(rect: CropRect, image_size: tuple[int, int]) -> CropRect | None:
     image_width, image_height = image_size
     left = max(rect.x, 0)
     top = max(rect.y, 0)
-    right = min(rect.x + rect.width, image_width)
-    bottom = min(rect.y + rect.height, image_height)
+    right = min(rect.right, image_width)
+    bottom = min(rect.bottom, image_height)
     if right <= left or bottom <= top:
         return None
     return CropRect(left, top, right - left, bottom - top)
@@ -73,12 +88,10 @@ def fit_aspect(rect: CropRect, aspect: tuple[float, float]) -> CropRect:
 
     長すぎる側だけを両端から均等に削る。端数は四捨五入し、最小 1px。
     """
-    aspect_width, aspect_height = aspect
-    if rect.width * aspect_height > rect.height * aspect_width:
-        width = min(rect.width, max(MIN_SIZE, round(rect.height * aspect_width / aspect_height)))
-        return CropRect(rect.x + (rect.width - width) // 2, rect.y, width, rect.height)
-    height = min(rect.height, max(MIN_SIZE, round(rect.width * aspect_height / aspect_width)))
-    return CropRect(rect.x, rect.y + (rect.height - height) // 2, rect.width, height)
+    width, height = _fit_aspect_size(rect.width, rect.height, aspect)
+    return CropRect(
+        rect.x + (rect.width - width) // 2, rect.y + (rect.height - height) // 2, width, height
+    )
 
 
 def constrain_rect(
@@ -91,13 +104,15 @@ def constrain_rect(
     clamped = clamp_crop(rect, image_size)
     if clamped is None:
         return None
+    return CropRect(clamped.x, clamped.y, *_fit_aspect_size(clamped.width, clamped.height, aspect))
+
+
+def _fit_aspect_size(width: int, height: int, aspect: tuple[float, float]) -> tuple[int, int]:
+    """width × height に収まる、縦横比 aspect の大きさ（長すぎる側だけを縮める、最小 1px）。"""
     aspect_width, aspect_height = aspect
-    width, height = clamped.width, clamped.height
     if width * aspect_height > height * aspect_width:
-        width = min(width, max(MIN_SIZE, round(height * aspect_width / aspect_height)))
-    else:
-        height = min(height, max(MIN_SIZE, round(width * aspect_height / aspect_width)))
-    return CropRect(clamped.x, clamped.y, width, height)
+        return min(width, max(MIN_SIZE, round(height * aspect_width / aspect_height))), height
+    return width, min(height, max(MIN_SIZE, round(width * aspect_height / aspect_width)))
 
 
 def aspect_drag_rect(
@@ -138,7 +153,7 @@ def aspect_drag_rect(
 
 def crop(image: Image.Image, rect: CropRect) -> Image.Image:
     """画像を指定範囲で切り抜く。範囲は事前に clamp_crop で補正しておくこと。"""
-    return image.crop((rect.x, rect.y, rect.x + rect.width, rect.y + rect.height))
+    return image.crop(rect.box)
 
 
 def fit_size(
@@ -245,12 +260,12 @@ def transform_rect(rect: CropRect, image_size: tuple[int, int], op: OrientOp) ->
     """image_size の画像上の範囲を、画像に op をかけた後の同じ部分を指す範囲に変換する。"""
     width, height = image_size
     if op is OrientOp.ROTATE_RIGHT:
-        return CropRect(height - (rect.y + rect.height), rect.x, rect.height, rect.width)
+        return CropRect(height - rect.bottom, rect.x, rect.height, rect.width)
     if op is OrientOp.ROTATE_LEFT:
-        return CropRect(rect.y, width - (rect.x + rect.width), rect.height, rect.width)
+        return CropRect(rect.y, width - rect.right, rect.height, rect.width)
     if op is OrientOp.FLIP_HORIZONTAL:
-        return CropRect(width - (rect.x + rect.width), rect.y, rect.width, rect.height)
-    return CropRect(rect.x, height - (rect.y + rect.height), rect.width, rect.height)
+        return CropRect(width - rect.right, rect.y, rect.width, rect.height)
+    return CropRect(rect.x, height - rect.bottom, rect.width, rect.height)
 
 
 def resize(image: Image.Image, size: tuple[int, int]) -> Image.Image:

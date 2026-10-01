@@ -671,7 +671,7 @@ def test_save_runs_in_worker_thread(loaded_window, qtbot, tmp_path, monkeypatch)
     started = threading.Event()
     release = threading.Event()
     threads = []
-    real_save = worker.save_image
+    real_save = worker.save_edited
 
     def slow_save(image, path, *args, **kwargs):
         threads.append(threading.current_thread())
@@ -679,7 +679,7 @@ def test_save_runs_in_worker_thread(loaded_window, qtbot, tmp_path, monkeypatch)
         release.wait(5)
         real_save(image, path, *args, **kwargs)
 
-    monkeypatch.setattr(worker, "save_image", slow_save)
+    monkeypatch.setattr(worker, "save_edited", slow_save)
     panel = loaded_window.settings_panel
     out = tmp_path / "slow.png"
 
@@ -714,8 +714,10 @@ def test_load_is_blocked_while_saving(loaded_window, qtbot, tmp_path, monkeypatc
     import image_editor.ui.worker as worker
 
     release = threading.Event()
-    real_save = worker.save_image
-    monkeypatch.setattr(worker, "save_image", lambda *a, **k: (release.wait(5), real_save(*a, **k)))
+    real_save = worker.save_edited
+    monkeypatch.setattr(
+        worker, "save_edited", lambda *a, **k: (release.wait(5), real_save(*a, **k))
+    )
     other = tmp_path / "other.png"
     Image.new("RGB", (10, 10)).save(other)
 

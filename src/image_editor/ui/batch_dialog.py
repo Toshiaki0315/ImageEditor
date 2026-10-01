@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from image_editor.core.batch import BatchOptions, collect_images
-from image_editor.core.io import SUPPORTED_EXTENSIONS, SaveOptions
+from image_editor.core.io import SUPPORTED_EXTENSIONS, SaveOptions, path_key
 from image_editor.core.presets import Preset
 from image_editor.core.transform import MAX_SIZE, MIN_SIZE
 
@@ -156,11 +156,11 @@ class BatchDialog(QDialog):
 
     def add_paths(self, paths: list[Path]) -> None:
         """ファイル・フォルダ（直下の画像）を一覧に加える。すでにあるものは加えない。"""
-        existing = {_key(path) for path in self.sources()}
+        existing = {path_key(path) for path in self.sources()}
         for path in collect_images(paths):
-            if _key(path) in existing:
+            if path_key(path) in existing:
                 continue
-            existing.add(_key(path))
+            existing.add(path_key(path))
             item = QListWidgetItem(path.name)
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setToolTip(str(path))
@@ -213,8 +213,3 @@ class BatchDialog(QDialog):
 
     def _update_start_button(self) -> None:
         self.start_button.setEnabled(self.file_list.count() > 0 and self._out_dir is not None)
-
-
-def _key(path: Path) -> str:
-    """同じファイルかを比べるためのキー（macOS は大文字・小文字を区別しない）。"""
-    return str(path.resolve()).casefold()

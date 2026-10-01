@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QMenu,
     QPushButton,
     QStyle,
@@ -80,9 +79,11 @@ from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外か�
     TAB_CROP_TEXT,
     TAB_OUTPUT_TEXT,
     TRIM_TEXT,
+    Adjustment,
     PanelState,
     ResettableSlider,
     Updating,
+    adjustment,
     amount_slider,
     ev_text,
     kelvin_text,
@@ -139,48 +140,85 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         self.filter_combo = QComboBox()
         for filter_type in FilterType:
             self.filter_combo.addItem(filter_type.label, filter_type)
-        # スライダーはダブルクリックで既定値に戻る
-        self.vignette_slider, self.vignette_value_label, vignette_row = amount_slider(
-            VIGNETTE_MIN, VIGNETTE_MAX
+        # 色の調整・ディテール・角丸のスライダー（ダブルクリックで既定値に戻る）。
+        # 設定の項目との対応・値の換算・表示の書式は Adjustment にまとめて持つ
+        # 露出は 0.1 EV 刻み。スライダーの値は「EV × 10」で持つ
+        exposure, exposure_row = adjustment(
+            "exposure",
+            round(EXPOSURE_MIN / EXPOSURE_STEP),
+            round(EXPOSURE_MAX / EXPOSURE_STEP),
+            to_setting=lambda value: value / round(1 / EXPOSURE_STEP),
+            to_slider=lambda ev: round(ev / EXPOSURE_STEP),
+            text=ev_text,
         )
-        self.aging_slider, self.aging_value_label, aging_row = amount_slider(AGING_MIN, AGING_MAX)
+        brightness, brightness_row = adjustment(
+            "brightness", BRIGHTNESS_MIN, BRIGHTNESS_MAX, text=signed_text
+        )
+        contrast, contrast_row = adjustment(
+            "contrast", CONTRAST_MIN, CONTRAST_MAX, text=signed_text
+        )
         # 色温度は 100K 刻み。スライダーの値は「ケルビン ÷ 100」で持つ
-        self.temperature_slider, self.temperature_value_label, temperature_row = amount_slider(
+        temperature, temperature_row = adjustment(
+            "temperature",
             TEMPERATURE_MIN // TEMPERATURE_STEP,
             TEMPERATURE_MAX // TEMPERATURE_STEP,
             default=TEMPERATURE_NEUTRAL // TEMPERATURE_STEP,
+            to_setting=lambda value: value * TEMPERATURE_STEP,
+            to_slider=lambda kelvin: kelvin // TEMPERATURE_STEP,
+            text=kelvin_text,
+            page_step=5,
         )
-        self.temperature_slider.setPageStep(5)
-        self.temperature_value_label.setText(kelvin_text(TEMPERATURE_NEUTRAL))
-        self.saturation_slider, self.saturation_value_label, saturation_row = amount_slider(
-            SATURATION_MIN, SATURATION_MAX
+        saturation, saturation_row = adjustment(
+            "saturation", SATURATION_MIN, SATURATION_MAX, text=signed_text
         )
-        self.saturation_value_label.setText(signed_text(0))
-        self.brightness_slider, self.brightness_value_label, brightness_row = amount_slider(
-            BRIGHTNESS_MIN, BRIGHTNESS_MAX
+        vignette, vignette_row = adjustment("vignette", VIGNETTE_MIN, VIGNETTE_MAX)
+        aging, aging_row = adjustment("aging", AGING_MIN, AGING_MAX)
+        sharpen, sharpen_row = adjustment("sharpen", DETAIL_MIN, DETAIL_MAX)
+        blur, blur_row = adjustment("blur", DETAIL_MIN, DETAIL_MAX)
+        denoise, denoise_row = adjustment("denoise", DETAIL_MIN, DETAIL_MAX)
+        # 角丸の半径（短辺に対する %）。形が角丸のときだけ操作できる
+        corner, corner_row = adjustment(
+            "corner_radius",
+            CORNER_RADIUS_MIN,
+            CORNER_RADIUS_MAX,
+            default=CORNER_RADIUS_DEFAULT,
+            text=percent_text,
+            page_step=5,
         )
-        self.brightness_value_label.setText(signed_text(0))
-        # 露出は 0.1 EV 刻み。スライダーの値は「EV × 10」で持つ
-        self.exposure_slider, self.exposure_value_label, exposure_row = amount_slider(
-            round(EXPOSURE_MIN / EXPOSURE_STEP), round(EXPOSURE_MAX / EXPOSURE_STEP)
+        # 「加工をリセット」で戻す色・ディテールのスライダー
+        self._color_adjustments = (
+            exposure,
+            brightness,
+            contrast,
+            temperature,
+            saturation,
+            vignette,
+            aging,
+            sharpen,
+            blur,
+            denoise,
         )
-        self.exposure_value_label.setText(ev_text(0.0))
-        self.contrast_slider, self.contrast_value_label, contrast_row = amount_slider(
-            CONTRAST_MIN, CONTRAST_MAX
-        )
-        self.contrast_value_label.setText(signed_text(0))
+        self._adjustments = (*self._color_adjustments, corner)
+        self._adjustment_by_field = {item.field: item for item in self._adjustments}
+        self.exposure_slider, self.exposure_value_label = exposure.slider, exposure.label
+        self.brightness_slider, self.brightness_value_label = brightness.slider, brightness.label
+        self.contrast_slider, self.contrast_value_label = contrast.slider, contrast.label
+        self.temperature_slider = temperature.slider
+        self.temperature_value_label = temperature.label
+        self.saturation_slider, self.saturation_value_label = saturation.slider, saturation.label
+        self.vignette_slider, self.vignette_value_label = vignette.slider, vignette.label
+        self.aging_slider, self.aging_value_label = aging.slider, aging.label
+        self.sharpen_slider, self.sharpen_value_label = sharpen.slider, sharpen.label
+        self.blur_slider, self.blur_value_label = blur.slider, blur.label
+        self.denoise_slider, self.denoise_value_label = denoise.slider, denoise.label
+        self.corner_slider, self.corner_value_label = corner.slider, corner.label
+
         self.frame_combo = QComboBox()
         for frame_type in FrameType:
             self.frame_combo.addItem(frame_type.label, frame_type)
         self.shape_combo = QComboBox()
         for shape_type in ShapeType:
             self.shape_combo.addItem(shape_type.label, shape_type)
-        # 角丸の半径（短辺に対する %）。形が角丸のときだけ操作できる
-        self.corner_slider, self.corner_value_label, corner_row = amount_slider(
-            CORNER_RADIUS_MIN, CORNER_RADIUS_MAX, default=CORNER_RADIUS_DEFAULT
-        )
-        self.corner_slider.setPageStep(5)
-        self.corner_value_label.setText(percent_text(CORNER_RADIUS_DEFAULT))
         # プリセット・文字はテイストと同じ行に置く
         self.preset_menu = QMenu(self)
         self.preset_button = QToolButton()
@@ -210,13 +248,6 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         filter_form.addRow("経年劣化", aging_row)
 
         # ディテール（シャープ・ぼかし・ノイズ除去）
-        self.sharpen_slider, self.sharpen_value_label, sharpen_row = amount_slider(
-            DETAIL_MIN, DETAIL_MAX
-        )
-        self.blur_slider, self.blur_value_label, blur_row = amount_slider(DETAIL_MIN, DETAIL_MAX)
-        self.denoise_slider, self.denoise_value_label, denoise_row = amount_slider(
-            DETAIL_MIN, DETAIL_MAX
-        )
         detail_box = QGroupBox("ディテール")
         detail_form = QFormLayout(detail_box)
         detail_form.addRow("シャープ", sharpen_row)
@@ -328,32 +359,18 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         self.frame_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
         # 円は正方形に切り抜くので、形もトリミングと同じく扱う
         self.shape_combo.currentIndexChanged.connect(lambda _: self._on_shape_changed())
-        self.corner_slider.valueChanged.connect(self._on_corner_changed)
         for name, spin in zip(("x", "y", "width", "height"), self._crop_spins(), strict=True):
             spin.valueChanged.connect(lambda _, name=name: self._on_crop_spin_edited(name))
         self.aspect_combo.currentIndexChanged.connect(lambda _: self._on_aspect_source_changed())
         self.portrait_check.toggled.connect(lambda _: self._on_aspect_source_changed())
         self.clear_crop_button.clicked.connect(self.clear_crop)
         self.trim_button.toggled.connect(self._on_trim_toggled)
-        self.vignette_slider.valueChanged.connect(self._on_vignette_changed)
-        self.aging_slider.valueChanged.connect(self._on_aging_changed)
-        self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
-        self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
-        self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
-        self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
-        self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
+        for item in self._adjustments:
+            item.slider.valueChanged.connect(lambda _, item=item: self._on_adjustment_changed(item))
         self.reset_adjustments_button.clicked.connect(self.reset_adjustments)
         for button, op in zip(self._orient_buttons(), OrientOp, strict=True):
             button.clicked.connect(lambda _, op=op: self.apply_orientation(op))
         self.tabs.currentChanged.connect(self.tab_changed)
-        for slider, label in (
-            (self.sharpen_slider, self.sharpen_value_label),
-            (self.blur_slider, self.blur_value_label),
-            (self.denoise_slider, self.denoise_value_label),
-        ):
-            slider.valueChanged.connect(
-                lambda value, label=label: self._on_detail_changed(label, value)
-            )
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.keep_exif_check.toggled.connect(lambda _: self._on_save_options_changed())
         self.keep_gps_check.toggled.connect(lambda _: self._on_save_options_changed())
@@ -426,20 +443,10 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             height=height,
             keep_aspect=keep_aspect,
             filter=self.filter_combo.currentData(),
-            vignette=self.vignette_slider.value(),
-            aging=self.aging_slider.value(),
-            temperature=self.temperature_kelvin(),
-            saturation=self.saturation_slider.value(),
-            brightness=self.brightness_slider.value(),
-            exposure=self.exposure_ev(),
-            contrast=self.contrast_slider.value(),
-            sharpen=self.sharpen_slider.value(),
-            blur=self.blur_slider.value(),
-            denoise=self.denoise_slider.value(),
             frame=self.frame(),
             shape=self.shape(),
-            corner_radius=self.corner_slider.value(),
             text=self._text,
+            **{item.field: item.value() for item in self._adjustments},
         )
 
     def base_size(self) -> tuple[int, int]:
@@ -512,49 +519,22 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
             self._sync_aspect()
         self._emit_changed()
 
-    def _on_vignette_changed(self, value: int) -> None:
-        self.vignette_value_label.setText(str(value))
-        self._emit_changed()
-
-    def _on_aging_changed(self, value: int) -> None:
-        self.aging_value_label.setText(str(value))
-        self._emit_changed()
-
     def temperature_kelvin(self) -> int:
         """色温度スライダーの値をケルビンで返す。"""
-        return self.temperature_slider.value() * TEMPERATURE_STEP
-
-    def _on_temperature_changed(self, _value: int) -> None:
-        self.temperature_value_label.setText(kelvin_text(self.temperature_kelvin()))
-        self._emit_changed()
-
-    def _on_saturation_changed(self, value: int) -> None:
-        self.saturation_value_label.setText(signed_text(value))
-        self._emit_changed()
-
-    def _on_brightness_changed(self, value: int) -> None:
-        self.brightness_value_label.setText(signed_text(value))
-        self._emit_changed()
+        return self._adjustment_by_field["temperature"].value()
 
     def exposure_ev(self) -> float:
         """露出スライダーの値を EV で返す（0.1 刻み）。"""
-        return self.exposure_slider.value() / round(1 / EXPOSURE_STEP)
+        return self._adjustment_by_field["exposure"].value()
 
-    def _on_exposure_changed(self, _value: int) -> None:
-        self.exposure_value_label.setText(ev_text(self.exposure_ev()))
-        self._emit_changed()
-
-    def _on_contrast_changed(self, value: int) -> None:
-        self.contrast_value_label.setText(signed_text(value))
+    def _on_adjustment_changed(self, item: Adjustment) -> None:
+        # 値の表示はプログラムから変えたときも合わせ、通知は _emit_changed が止める
+        item.update_label()
         self._emit_changed()
 
     def _on_shape_changed(self) -> None:
         self._update_corner_enabled()
         self._on_aspect_source_changed()
-
-    def _on_corner_changed(self, value: int) -> None:
-        self.corner_value_label.setText(percent_text(value))
-        self._emit_changed()
 
     def _update_corner_enabled(self) -> None:
         """角丸のスライダーは、画像があって形が角丸のときだけ操作できる。"""
@@ -565,10 +545,6 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
     def _on_quality_changed(self, value: int) -> None:
         self.quality_value_label.setText(str(value))
         self._on_save_options_changed()
-
-    def _on_detail_changed(self, label: QLabel, value: int) -> None:
-        label.setText(str(value))
-        self._emit_changed()
 
     def _on_save_options_changed(self) -> None:
         self._update_gps_enabled()
@@ -620,20 +596,9 @@ class SettingsPanel(CropMixin, StateMixin, QWidget):
         self.width_spin.setValue(min(size[0], MAX_SIZE))
         self.height_spin.setValue(min(size[1], MAX_SIZE))
 
-    def _adjustment_sliders(self) -> tuple["ResettableSlider", ...]:
-        """色を変えるスライダー（「加工をリセット」で戻すもの）。"""
-        return (
-            self.exposure_slider,
-            self.brightness_slider,
-            self.contrast_slider,
-            self.temperature_slider,
-            self.saturation_slider,
-            self.vignette_slider,
-            self.aging_slider,
-            self.sharpen_slider,
-            self.blur_slider,
-            self.denoise_slider,
-        )
+    def _adjustment_sliders(self) -> tuple[ResettableSlider, ...]:
+        """色・ディテールのスライダー（「加工をリセット」で戻すもの）。"""
+        return tuple(item.slider for item in self._color_adjustments)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in self.findChildren(QWidget):

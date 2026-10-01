@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -11,13 +12,16 @@ from image_editor.core.io import (
     SaveOptions,
     UnsupportedImageError,
     default_save_path,
+    edited_names,
     flatten_alpha,
     format_for_path,
     is_savable,
     is_supported,
     load_image,
     normalize_mode,
+    path_key,
     prepare_exif,
+    save_edited,
     save_image,
     save_suffix,
 )
@@ -542,3 +546,48 @@ def test_heic_cannot_be_saved(tmp_path):
 
 def test_default_save_path_for_heic_is_jpeg(tmp_path):
     assert default_save_path(tmp_path / "IMG_0001.HEIC") == tmp_path / "IMG_0001_edited.jpg"
+
+
+def test_edited_names_numbers_and_suffix(tmp_path):
+    names = edited_names(tmp_path / "IMG_1.HEIC", tmp_path / "out")
+    assert [next(names).name for _ in range(3)] == [
+        "IMG_1_edited.jpg",
+        "IMG_1_edited_2.jpg",
+        "IMG_1_edited_3.jpg",
+    ]
+    assert next(edited_names(Path("a/b.png"), tmp_path)) == tmp_path / "b_edited.png"
+
+
+def test_path_key_ignores_case(tmp_path):
+    assert path_key(tmp_path / "Photo.JPG") == path_key(tmp_path / "photo.jpg")
+    assert path_key(tmp_path / "a.jpg") != path_key(tmp_path / "b.jpg")
+
+
+def _exif_with_gps() -> bytes:
+    exif = Image.Exif()
+    exif[0x0132] = "2026:10:02 10:00:00"
+    exif[0x0112] = 6
+    exif.get_ifd(0x8825)[1] = "N"
+    return exif.tobytes()
+
+
+def test_save_edited_follows_options(tmp_path):
+    image = Image.new("RGB", (8, 6), RED)
+    source_exif = _exif_with_gps()
+
+    kept = tmp_path / "kept.jpg"
+    save_edited(image, kept, SaveOptions(keep_exif=True, keep_gps=False), source_exif)
+    with Image.open(kept) as saved:
+        exif = saved.getexif()
+        assert exif[0x0132] == "2026:10:02 10:00:00"
+        assert exif[0x0112] == 1
+        assert 0x8825 not in exif
+
+    dropped = tmp_path / "dropped.jpg"
+    save_edited(image, dropped, SaveOptions(keep_exif=False), source_exif)
+    with Image.open(dropped) as saved:
+        assert len(saved.getexif()) == 0
+
+    no_source = tmp_path / "none.png"
+    save_edited(image, no_source, SaveOptions(), None)
+    assert no_source.exists()

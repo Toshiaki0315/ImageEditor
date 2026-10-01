@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from image_editor.core.io import (
     SaveOptions,
+    edited_names,
     is_same_file,
     is_supported,
     load_image,
-    prepare_exif,
-    save_image,
+    path_key,
+    save_edited,
     save_suffix,
 )
 from image_editor.core.pipeline import EditSettings, apply_edits, effective_crop
@@ -66,29 +68,18 @@ def output_path(source: Path, out_dir: Path) -> Path:
     すでにある、または元のファイルそのものになる場合は `<名前>_edited`、`_edited_2` … と、
     既存のファイルと重ならない名前にする。
     """
-    suffix = save_suffix(source)
-    candidate = out_dir / f"{source.stem}{suffix}"
-    if not candidate.exists() and not is_same_file(candidate, source):
-        return candidate
-    number = 1
-    while True:
-        edited = "_edited" if number == 1 else f"_edited_{number}"
-        candidate = out_dir / f"{source.stem}{edited}{suffix}"
-        if not candidate.exists() and not is_same_file(candidate, source):
-            return candidate
-        number += 1
+    same_name = out_dir / f"{source.stem}{save_suffix(source)}"
+    candidates = itertools.chain([same_name], edited_names(source, out_dir))
+    return next(c for c in candidates if not c.exists() and not is_same_file(c, source))
 
 
 def process_image(source: Path, out_dir: Path, options: BatchOptions) -> Path:
     """1 枚を読み込み、加工して out_dir に保存し、保存先を返す（元の画像は変えない）。"""
     loaded = load_image(source)
     edited = apply_edits(loaded.image, batch_settings(options, loaded.image.size))
-    exif = None
-    if options.save.keep_exif and loaded.exif is not None:
-        exif = prepare_exif(loaded.exif, edited.size, keep_gps=options.save.keep_gps)
     path = output_path(source, out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    save_image(edited, path, quality=options.save.quality, exif=exif)
+    save_edited(edited, path, options.save, loaded.exif)
     return path
 
 
@@ -127,7 +118,7 @@ def collect_images(paths: Iterable[Path]) -> list[Path]:
     seen: set[str] = set()
 
     def add(path: Path) -> None:
-        key = str(path.resolve()).casefold()
+        key = path_key(path)
         if key not in seen:
             seen.add(key)
             images.append(path)

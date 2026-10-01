@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from image_editor.core.effects import (
-    EXPOSURE_STEP,
-    TEMPERATURE_STEP,
-)
+from image_editor.core.pipeline import EditSettings
 from image_editor.core.presets import Preset, apply_preset
 from image_editor.core.text import TextSettings
 from image_editor.core.transform import (
@@ -48,21 +45,7 @@ class StateMixin:
             self._set_crop_limits(self._image_size)
             self._set_crop_spins(crop)
             self._committed_crop = self._clamped_range()
-            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
-            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
-            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
-            self.corner_slider.setValue(settings.corner_radius)
-            self._text = settings.text
-            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
-            self.brightness_slider.setValue(settings.brightness)
-            self.contrast_slider.setValue(settings.contrast)
-            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
-            self.saturation_slider.setValue(settings.saturation)
-            self.vignette_slider.setValue(settings.vignette)
-            self.aging_slider.setValue(settings.aging)
-            self.sharpen_slider.setValue(settings.sharpen)
-            self.blur_slider.setValue(settings.blur)
-            self.denoise_slider.setValue(settings.denoise)
+            self._set_look_controls(settings)
             self._aspect_index = self.aspect_combo.findData(state.aspect)
             self.aspect_combo.setCurrentIndex(self._aspect_index)
             self.portrait_check.setChecked(state.portrait)
@@ -134,23 +117,21 @@ class StateMixin:
             return
         settings = apply_preset(self.settings(), preset)
         with self._block():
-            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
-            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
-            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
-            self.corner_slider.setValue(settings.corner_radius)
-            self._text = settings.text
-            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
-            self.brightness_slider.setValue(settings.brightness)
-            self.contrast_slider.setValue(settings.contrast)
-            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
-            self.saturation_slider.setValue(settings.saturation)
-            self.vignette_slider.setValue(settings.vignette)
-            self.aging_slider.setValue(settings.aging)
-            self.sharpen_slider.setValue(settings.sharpen)
-            self.blur_slider.setValue(settings.blur)
-            self.denoise_slider.setValue(settings.denoise)
+            self._set_look_controls(settings)
         self._update_corner_enabled()
         self._on_aspect_source_changed()
+
+    def _set_look_controls(self, settings: EditSettings) -> None:
+        """テイスト・フレーム・形・文字とスライダー（色・ディテール・角丸）を settings に合わせる。
+
+        通知はしない（_block の中で呼ぶ）。
+        """
+        self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
+        self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
+        self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
+        self._text = settings.text
+        for item in self._adjustments:
+            item.set_value(getattr(settings, item.field))
 
     def reset_adjustments(self) -> None:
         """テイストと色のスライダー（露出〜経年劣化）を既定値に戻す。

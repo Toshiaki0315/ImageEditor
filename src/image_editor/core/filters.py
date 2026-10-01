@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 from collections.abc import Callable
 from enum import Enum
 
@@ -10,6 +9,15 @@ from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from image_editor.core.io import normalize_mode
 from image_editor.core.parallel import filter_image
+from image_editor.core.tone import (
+    Curve,
+    add_grain,
+    clip_table,
+    curve_table,
+    map_rgb,
+    s_curve,
+    smoothstep,
+)
 
 # --- 係数（初版の目安値。requirements.md §5.4） ------------------------------
 
@@ -183,12 +191,7 @@ def apply_filter(image: Image.Image, filter_type: FilterType) -> Image.Image:
     image = normalize_mode(image)
     if filter_type is FilterType.NONE:
         return image.copy()
-
-    rgb, alpha = _split_alpha(image)
-    filtered = _RGB_FILTERS[filter_type](rgb)
-    if alpha is not None:
-        filtered.putalpha(alpha)
-    return filtered
+    return map_rgb(image, _RGB_FILTERS[filter_type])
 
 
 def sepia(image: Image.Image) -> Image.Image:
@@ -228,13 +231,12 @@ def positive_film(image: Image.Image) -> Image.Image:
     saturated = ImageEnhance.Color(image).enhance(POSITIVE_SATURATION)
 
     def curve(v: int) -> float:
-        x = v / 255
-        return (1 - POSITIVE_CURVE) * x + POSITIVE_CURVE * (3 * x * x - 2 * x * x * x)
+        return s_curve(v / 255, POSITIVE_CURVE)
 
     red = [curve(v) * 255 + POSITIVE_HIGHLIGHT_WARM * (v / 255) ** 2 for v in range(256)]
     green = [curve(v) * 255 for v in range(256)]
     blue = [curve(v) * 255 + POSITIVE_SHADOW_COOL * (1 - v / 255) ** 2 for v in range(256)]
-    return saturated.point(_clip_table(red + green + blue))
+    return saturated.point(clip_table(red + green + blue))
 
 
 def retro_camera(image: Image.Image) -> Image.Image:
@@ -245,27 +247,7 @@ def retro_camera(image: Image.Image) -> Image.Image:
         tables += [
             (RETRO_BLACK + v * (RETRO_WHITE - RETRO_BLACK) / 255) * factor for v in range(256)
         ]
-    return add_grain(muted.point(_clip_table(tables)), RETRO_GRAIN, RETRO_GRAIN_SEED)
-
-
-def add_grain(image: Image.Image, strength: int, seed: int) -> Image.Image:
-    """RGB 画像にモノクロの粒子（ノイズ）を重ねる。同じ seed と大きさなら毎回同じ模様になる。
-
-    明るさは最大で ±strength 変化する。
-    """
-    rng = random.Random(seed)
-    size = image.size
-
-    def uniform_noise() -> Image.Image:
-        return Image.frombytes("L", size, rng.randbytes(size[0] * size[1]))
-
-    # 一様乱数 2 つの平均で、中央 (128) に寄った自然な粒子にする
-    noise = Image.blend(uniform_noise(), uniform_noise(), 0.5)
-    scale = strength / 128
-    brighter = noise.point([int(max(0, v - 128) * scale + 0.5) for v in range(256)])
-    darker = noise.point([int(max(0, 128 - v) * scale + 0.5) for v in range(256)])
-    image = ImageChops.add(image, Image.merge("RGB", (brighter,) * 3))
-    return ImageChops.subtract(image, Image.merge("RGB", (darker,) * 3))
+    return add_grain(muted.point(clip_table(tables)), RETRO_GRAIN, RETRO_GRAIN_SEED)
 
 
 def high_key(image: Image.Image) -> Image.Image:
@@ -287,8 +269,8 @@ def dramatic(image: Image.Image) -> Image.Image:
     """RGB 画像をドラマチック（強い明暗、彩度控えめ）にする。"""
 
     def curve(x: float) -> float:
-        once = _smoothstep(x)
-        twice = _smoothstep(once)
+        once = smoothstep(x)
+        twice = smoothstep(once)
         return ((1 - DRAMATIC_CURVE) * once + DRAMATIC_CURVE * twice) * DRAMATIC_GAIN
 
     return _tone(image, curve, saturation=DRAMATIC_SATURATION)
@@ -299,8 +281,7 @@ def modern(image: Image.Image) -> Image.Image:
     black, white = MODERN_BLACK / 255, MODERN_WHITE / 255
 
     def curve(x: float) -> float:
-        s_curve = (1 - MODERN_CURVE) * x + MODERN_CURVE * _smoothstep(x)
-        return black + (white - black) * s_curve
+        return black + (white - black) * s_curve(x, MODERN_CURVE)
 
     return _tone(image, curve, MODERN_TINT, MODERN_SATURATION)
 
@@ -309,7 +290,7 @@ def natural(image: Image.Image) -> Image.Image:
     """RGB 画像をナチュラル（彩度と明暗差をわずかに上げ、ほんのり暖色）にする。"""
     return _tone(
         image,
-        lambda x: (1 - NATURAL_CURVE) * x + NATURAL_CURVE * _smoothstep(x),
+        lambda x: s_curve(x, NATURAL_CURVE),
         NATURAL_TINT,
         NATURAL_SATURATION,
     )
@@ -317,16 +298,12 @@ def natural(image: Image.Image) -> Image.Image:
 
 def cinematic(image: Image.Image) -> Image.Image:
     """RGB 画像をシネマティック（暗部を青緑、明部をオレンジに寄せる）にする。"""
-
-    def s_curve(x: float) -> float:
-        return (1 - CINEMATIC_CURVE) * x + CINEMATIC_CURVE * _smoothstep(x)
-
     return _channel_curves(
         image,
         (
-            lambda x: s_curve(x) + CINEMATIC_SPLIT * (2 * x - 1),
-            lambda x: s_curve(x) + CINEMATIC_SHADOW_GREEN * (1 - x) ** 2,
-            lambda x: s_curve(x) - CINEMATIC_SPLIT * (2 * x - 1),
+            lambda x: s_curve(x, CINEMATIC_CURVE) + CINEMATIC_SPLIT * (2 * x - 1),
+            lambda x: s_curve(x, CINEMATIC_CURVE) + CINEMATIC_SHADOW_GREEN * (1 - x) ** 2,
+            lambda x: s_curve(x, CINEMATIC_CURVE) - CINEMATIC_SPLIT * (2 * x - 1),
         ),
         CINEMATIC_SATURATION,
     )
@@ -336,18 +313,17 @@ def noir(image: Image.Image) -> Image.Image:
     """RGB 画像をノワール（コントラストの強い白黒、深い黒）にする。"""
 
     def curve(x: float) -> float:
-        once = _smoothstep(x)
-        return ((1 - NOIR_CURVE) * once + NOIR_CURVE * _smoothstep(once)) ** NOIR_GAMMA
+        once = smoothstep(x)
+        return ((1 - NOIR_CURVE) * once + NOIR_CURVE * smoothstep(once)) ** NOIR_GAMMA
 
-    gray = ImageOps.grayscale(image).point(_clip_table([curve(v / 255) * 255 for v in range(256)]))
-    return gray.convert("RGB")
+    return ImageOps.grayscale(image).point(curve_table(curve)).convert("RGB")
 
 
 def bleach_bypass(image: Image.Image) -> Image.Image:
     """RGB 画像をブリーチバイパス（色を抜いて明暗を強く、ざらっと）にする。"""
     toned = _tone(
         image,
-        lambda x: (1 - BLEACH_CURVE) * x + BLEACH_CURVE * _smoothstep(x),
+        lambda x: s_curve(x, BLEACH_CURVE),
         saturation=BLEACH_SATURATION,
     )
     return add_grain(toned, BLEACH_GRAIN, BLEACH_GRAIN_SEED)
@@ -370,7 +346,7 @@ def cross_process(image: Image.Image) -> Image.Image:
     return _channel_curves(
         image,
         (
-            lambda x: (1 - CROSS_RED_CURVE) * x + CROSS_RED_CURVE * _smoothstep(x),
+            lambda x: s_curve(x, CROSS_RED_CURVE),
             lambda x: x**CROSS_GREEN_GAMMA,
             lambda x: low + (high - low) * x,
         ),
@@ -392,7 +368,7 @@ def autumn(image: Image.Image) -> Image.Image:
     """RGB 画像を秋らしく（暖かく落ち着いた色に）する。"""
     return _tone(
         image,
-        lambda x: ((1 - AUTUMN_CURVE) * x + AUTUMN_CURVE * _smoothstep(x)) ** AUTUMN_GAMMA,
+        lambda x: s_curve(x, AUTUMN_CURVE) ** AUTUMN_GAMMA,
         AUTUMN_TINT,
         AUTUMN_SATURATION,
     )
@@ -409,7 +385,7 @@ def soft_focus(image: Image.Image) -> Image.Image:
         max(0.0, (v / 255 - threshold) / (1 - threshold)) * 255 * SOFT_GLOW_STRENGTH
         for v in range(256)
     ]
-    glow = blurred.point(_clip_table(glow_curve) * 3)
+    glow = blurred.point(clip_table(glow_curve) * 3)
     return ImageChops.screen(Image.blend(image, blurred, SOFT_BLUR_MIX), glow)
 
 
@@ -431,9 +407,7 @@ def hdr(image: Image.Image) -> Image.Image:
 def infrared(image: Image.Image) -> Image.Image:
     """RGB 画像を赤外線風（緑の草木が白く光り、空が暗い、非現実的な色）にする。"""
     brightness = image.convert("L", INFRARED_WEIGHTS)
-    brightness = brightness.point(
-        _clip_table([(v / 255) ** INFRARED_GAMMA * 255 for v in range(256)])
-    )
+    brightness = brightness.point(curve_table(lambda x: x**INFRARED_GAMMA))
     red, green, blue = image.split()
     swapped = Image.merge("RGB", (blue, green, red))  # R と B を入れ替えた非現実的な色
     return Image.blend(Image.merge("RGB", (brightness,) * 3), swapped, INFRARED_COLOR_MIX)
@@ -445,19 +419,18 @@ def _radius(image: Image.Image, ratio: float) -> float:
 
 def _channel_curves(
     image: Image.Image,
-    curves: tuple[Callable[[float], float], Callable[[float], float], Callable[[float], float]],
+    curves: tuple[Curve, Curve, Curve],
     saturation: float = 1.0,
 ) -> Image.Image:
     """彩度を変えてから、R / G / B それぞれのトーンカーブ (0〜1 → 0〜1) を 1 回の LUT でかける。"""
     if saturation != 1.0:
         image = ImageEnhance.Color(image).enhance(saturation)
-    table = [curve(v / 255) * 255 for curve in curves for v in range(256)]
-    return image.point(_clip_table(table))
+    return image.point([value for curve in curves for value in curve_table(curve)])
 
 
 def _tone(
     image: Image.Image,
-    curve: Callable[[float], float],
+    curve: Curve,
     tint: tuple[float, float, float] = (1.0, 1.0, 1.0),
     saturation: float = 1.0,
 ) -> Image.Image:
@@ -465,22 +438,7 @@ def _tone(
     if saturation != 1.0:
         image = ImageEnhance.Color(image).enhance(saturation)
     levels = [curve(v / 255) * 255 for v in range(256)]
-    return image.point(_clip_table([level * factor for factor in tint for level in levels]))
-
-
-def _smoothstep(x: float) -> float:
-    return x * x * (3 - 2 * x)
-
-
-def _split_alpha(image: Image.Image) -> tuple[Image.Image, Image.Image | None]:
-    if image.mode == "RGBA":
-        return image.convert("RGB"), image.getchannel("A")
-    return image, None
-
-
-def _clip_table(values: list[float]) -> list[int]:
-    """四捨五入して 0〜255 にクリップしたルックアップテーブルを返す。"""
-    return [min(255, max(0, int(v + 0.5))) for v in values]
+    return image.point(clip_table(level * factor for factor in tint for level in levels))
 
 
 def _scale_table(factor: float) -> list[int]:

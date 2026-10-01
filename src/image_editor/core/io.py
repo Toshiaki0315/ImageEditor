@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,13 +121,25 @@ def default_save_path(path: Path) -> Path:
     元の形式が保存できない（HEIC など）なら拡張子は .jpg にする。すでにあれば
     `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
     """
-    suffix = save_suffix(path)
-    candidate = path.with_name(f"{path.stem}_edited{suffix}")
+    return next(c for c in edited_names(path, path.parent) if not c.exists())
+
+
+def edited_names(source: Path, folder: Path) -> Iterator[Path]:
+    """folder に保存するときの名前の候補 `<元の名前>_edited`、`_edited_2` … を順に返す。
+
+    拡張子は save_suffix（保存できない形式なら .jpg）。候補は終わりなく続く。
+    """
+    suffix = save_suffix(source)
+    yield folder / f"{source.stem}_edited{suffix}"
     number = 2
-    while candidate.exists():
-        candidate = path.with_name(f"{path.stem}_edited_{number}{suffix}")
+    while True:
+        yield folder / f"{source.stem}_edited_{number}{suffix}"
         number += 1
-    return candidate
+
+
+def path_key(path: Path) -> str:
+    """同じファイルかを比べるためのキー（macOS のファイルシステムは大文字・小文字を区別しない）。"""
+    return str(path.resolve()).casefold()
 
 
 def is_same_file(a: Path, b: Path) -> bool:
@@ -138,7 +151,7 @@ def is_same_file(a: Path, b: Path) -> bool:
     try:
         return os.path.samefile(a, b)
     except OSError:
-        return str(a.resolve()).casefold() == str(b.resolve()).casefold()
+        return path_key(a) == path_key(b)
 
 
 def load_image(path: StrPath) -> LoadedImage:
@@ -182,7 +195,7 @@ def normalize_mode(image: Image.Image) -> Image.Image:
         return image
     if mode.startswith("I;16") or mode in ("I", "F"):
         return _to_8bit_gray(image).convert("RGB")
-    if mode in _ALPHA_MODES or (mode == "P" and "transparency" in image.info):
+    if _has_alpha(image):
         return image.convert("RGBA")
     return image.convert("RGB")
 
@@ -216,6 +229,22 @@ def save_image(
         options["exif"] = exif
 
     image.save(path, format=file_format, **options)
+
+
+def save_edited(
+    image: Image.Image,
+    path: StrPath,
+    options: SaveOptions,
+    source_exif: bytes | None = None,
+) -> None:
+    """編集した画像を「保存の設定」に従って保存する。
+
+    source_exif は元画像の EXIF。options.keep_exif のときだけ、prepare_exif で整えて書き込む。
+    """
+    exif = None
+    if options.keep_exif and source_exif is not None:
+        exif = prepare_exif(source_exif, image.size, keep_gps=options.keep_gps)
+    save_image(image, path, quality=options.quality, exif=exif)
 
 
 def prepare_exif(exif: bytes, size: tuple[int, int], keep_gps: bool = False) -> bytes:

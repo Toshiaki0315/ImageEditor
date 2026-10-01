@@ -41,9 +41,7 @@ def image_to_widget(x: float, y: float, image_rect: QRectF, image_size: tuple[in
 def crop_to_widget_rect(rect: CropRect, image_rect: QRectF, image_size: tuple[int, int]) -> QRectF:
     """トリミング範囲（原画像座標）をウィジェット上の矩形に換算する。"""
     top_left = image_to_widget(rect.x, rect.y, image_rect, image_size)
-    bottom_right = image_to_widget(
-        rect.x + rect.width, rect.y + rect.height, image_rect, image_size
-    )
+    bottom_right = image_to_widget(rect.right, rect.bottom, image_rect, image_size)
     return QRectF(top_left, bottom_right)
 
 
@@ -336,7 +334,7 @@ class CropOverlay(QWidget):
         assert self._crop is not None
         rect = self._crop
         left, top = rect.x, rect.y
-        right, bottom = rect.x + rect.width, rect.y + rect.height
+        right, bottom = rect.right, rect.bottom
         return [(right, bottom), (left, bottom), (left, top), (right, top)][corner]
 
     def _update_cursor(self, point: QPointF) -> None:
