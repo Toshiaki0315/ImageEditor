@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PIL import Image
-from PyQt6.QtCore import QMimeData, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QMimeData, QPointF, QRectF, QSize, QSizeF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -12,11 +12,13 @@ from PyQt6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QImage,
+    QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
     QPixmap,
     QResizeEvent,
+    QWheelEvent,
 )
 from PyQt6.QtWidgets import QLabel, QWidget
 
@@ -47,6 +49,7 @@ class DropArea(QWidget):
     """
 
     files_dropped = pyqtSignal(list)  # list[Path]
+    double_clicked = pyqtSignal(object)  # QPointF（ウィジェット座標）
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,6 +68,11 @@ class DropArea(QWidget):
         self.badge.hide()
         # 右下に重ねるヒストグラム（範囲選択のマスクより手前）
         self.histogram_view = HistogramView(self)
+        # 100% 表示（画像 1px = 画面の 1 画素）。表示中の画像と、その左上のウィジェット座標
+        self._zoom: QPixmap | None = None
+        self._zoom_has_alpha = False
+        self._zoom_offset = QPointF(0, 0)
+        self._pan_from: tuple[QPointF, QPointF] | None = None  # (押した位置, そのときの左上)
 
     # --- 画像 ---------------------------------------------------------------
 
@@ -106,8 +114,61 @@ class DropArea(QWidget):
 
     def _place_badge(self) -> None:
         image_rect = self.image_rect()
-        origin = image_rect.topLeft() if not image_rect.isEmpty() else QRectF(self.rect()).topLeft()
+        if image_rect.isEmpty():
+            origin = QRectF(self.rect()).topLeft()
+        else:
+            # 100% 表示で画像が左上にはみ出していても、見える位置に出す
+            origin = QPointF(max(image_rect.x(), 0), max(image_rect.y(), 0))
         self.badge.move(round(origin.x()) + BADGE_MARGIN, round(origin.y()) + BADGE_MARGIN)
+
+    def set_zoom_image(
+        self, image: Image.Image | None, center: tuple[float, float] | None = None
+    ) -> None:
+        """100% 表示（画像 1px = 画面の 1 画素）にする。None で画面に合わせた表示に戻す。
+
+        center（画像の座標）を渡すと、その点が表示の中央に来るようにする。渡さなければ、
+        同じ大きさの画像を表示中なら見ている場所を保ち、そうでなければ画像の中央を見せる。
+        100% 表示の間は、ドラッグとスクロールで見る場所を動かせる。
+        """
+        if image is None:
+            self._zoom = None
+            self._pan_from = None
+            self.unsetCursor()
+        else:
+            previous = self._zoom_logical_size() if self._zoom is not None else None
+            pixmap = QPixmap.fromImage(pil_to_qimage(image))
+            pixmap.setDevicePixelRatio(self.devicePixelRatioF())
+            self._zoom = pixmap
+            self._zoom_has_alpha = pixmap.hasAlphaChannel()
+            size = self._zoom_logical_size()
+            if center is not None or previous != size:
+                ratio = self.devicePixelRatioF()
+                cx, cy = center if center is not None else (image.width / 2, image.height / 2)
+                self._zoom_offset = QPointF(
+                    self.width() / 2 - cx / ratio, self.height() / 2 - cy / ratio
+                )
+            self._clamp_zoom_offset()
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._place_badge()
+        self.update()
+
+    def is_zoomed(self) -> bool:
+        """100% 表示中かを返す。"""
+        return self._zoom is not None
+
+    def zoom_offset(self) -> QPointF:
+        """100% 表示の画像の左上（ウィジェット座標）を返す。"""
+        return QPointF(self._zoom_offset)
+
+    def zoom_center(self) -> tuple[float, float] | None:
+        """100% 表示で、表示の中央に見えている点（画像の座標）を返す。"""
+        if self._zoom is None:
+            return None
+        ratio = self.devicePixelRatioF()
+        return (
+            (self.width() / 2 - self._zoom_offset.x()) * ratio,
+            (self.height() / 2 - self._zoom_offset.y()) * ratio,
+        )
 
     def has_image(self) -> bool:
         """画像が設定されているかを返す。"""
@@ -118,7 +179,12 @@ class DropArea(QWidget):
         return self._highlighted
 
     def image_rect(self) -> QRectF:
-        """画像を描画する範囲（ウィジェット座標、論理ピクセル）を返す。画像がなければ空。"""
+        """画像を描画する範囲（ウィジェット座標、論理ピクセル）を返す。画像がなければ空。
+
+        100% 表示中は、表示している画像全体の範囲（ウィジェットからはみ出すこともある）。
+        """
+        if self._zoom is not None:
+            return QRectF(self._zoom_offset, QSizeF(self._zoom_logical_size()))
         if self._source is None:
             return QRectF()
         area = QRectF(self.rect()).adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
@@ -158,6 +224,8 @@ class DropArea(QWidget):
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         super().resizeEvent(event)
         self.crop_overlay.setGeometry(self.rect())
+        if self._zoom is not None:
+            self._clamp_zoom_offset()
         self._place_badge()
         self._place_histogram()
 
@@ -170,10 +238,15 @@ class DropArea(QWidget):
         palette = self.palette()
         highlight = palette.highlight().color()
 
-        pixmap = self.display_pixmap()
+        pixmap = self._zoom if self._zoom is not None else self.display_pixmap()
+        has_alpha = (
+            self._zoom_has_alpha
+            if self._zoom is not None
+            else self._source is not None and self._source.hasAlphaChannel()
+        )
         if pixmap is not None:
             image_rect = self.image_rect()
-            if self._source is not None and self._source.hasAlphaChannel():
+            if has_alpha:
                 # 透過部分が分かるよう、画像の範囲にだけ市松模様を敷いてから重ねる
                 painter.setBrushOrigin(image_rect.topLeft())
                 painter.fillRect(image_rect, self._checker_brush())
@@ -193,6 +266,76 @@ class DropArea(QWidget):
             painter.setBrush(fill)
             painter.drawRoundedRect(frame, BORDER_RADIUS, BORDER_RADIUS)
         painter.end()
+
+    # --- 100% 表示の移動 ---------------------------------------------------------
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if (
+            self._zoom is not None
+            and event is not None
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._pan_from = (event.position(), QPointF(self._zoom_offset))
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
+        if self._zoom is not None and self._pan_from is not None and event is not None:
+            start, offset = self._pan_from
+            self._zoom_offset = offset + (event.position() - start)
+            self._clamp_zoom_offset()
+            self._place_badge()
+            self.update()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:
+        if self._pan_from is not None:
+            self._pan_from = None
+            if self._zoom is not None:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit(event.position())
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent | None) -> None:
+        if self._zoom is None or event is None:
+            super().wheelEvent(event)
+            return
+        delta = event.pixelDelta()
+        if delta.isNull():
+            delta = event.angleDelta() / 4  # マウスのホイール（1 段 = 120）は 30px
+        self._zoom_offset += QPointF(delta.x(), delta.y())
+        self._clamp_zoom_offset()
+        self._place_badge()
+        self.update()
+        event.accept()
+
+    def _zoom_logical_size(self) -> QSize:
+        if self._zoom is None:
+            return QSize()
+        ratio = self.devicePixelRatioF()
+        return QSize(round(self._zoom.width() / ratio), round(self._zoom.height() / ratio))
+
+    def _clamp_zoom_offset(self) -> None:
+        """画像が表示より小さい向きは中央にそろえ、大きい向きははみ出し過ぎないよう止める。"""
+        size = self._zoom_logical_size()
+        x, y = self._zoom_offset.x(), self._zoom_offset.y()
+        if size.width() <= self.width():
+            x = (self.width() - size.width()) / 2
+        else:
+            x = min(0.0, max(float(self.width() - size.width()), x))
+        if size.height() <= self.height():
+            y = (self.height() - size.height()) / 2
+        else:
+            y = min(0.0, max(float(self.height() - size.height()), y))
+        self._zoom_offset = QPointF(x, y)
 
     def _checker_brush(self) -> QBrush:
         """市松模様のブラシを返す。Retina でもぼやけないよう実ピクセルでタイルを作る。"""

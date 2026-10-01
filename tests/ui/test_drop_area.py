@@ -266,3 +266,104 @@ def test_badge(qtbot):
 
     area.set_badge(None)
     assert area.badge_text() is None
+
+
+# --- 100% 表示 ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def zoom_area(qtbot):
+    area = DropArea()
+    qtbot.addWidget(area)
+    area.resize(400, 300)
+    area.show()
+    qtbot.waitExposed(area)
+    area.set_image(Image.new("RGB", (100, 75)))
+    return area
+
+
+def big_image(size=(2000, 1600)) -> Image.Image:
+    image = Image.new("RGB", size, (0, 0, 255))
+    image.paste((255, 0, 0), (0, 0, size[0] // 2, size[1]))
+    return image
+
+
+def test_zoom_shows_one_image_pixel_per_device_pixel(zoom_area):
+    zoom_area.set_zoom_image(big_image())
+
+    assert zoom_area.is_zoomed()
+    ratio = zoom_area.devicePixelRatioF()
+    rect = zoom_area.image_rect()
+    assert rect.width() == pytest.approx(2000 / ratio, abs=1)
+    assert rect.height() == pytest.approx(1600 / ratio, abs=1)
+    # 最初は画像の中央を見せる
+    center = zoom_area.zoom_center()
+    assert center == pytest.approx((1000, 800), abs=ratio * 2)
+    zoom_area.grab()  # 描画で落ちない
+
+
+def test_zoom_center_and_keep_position(zoom_area):
+    zoom_area.set_zoom_image(big_image(), center=(300, 400))
+    assert zoom_area.zoom_center() == pytest.approx((300, 400), abs=4)
+
+    # 同じ大きさの画像で更新しても、見ている場所は変わらない
+    zoom_area.set_zoom_image(big_image())
+    assert zoom_area.zoom_center() == pytest.approx((300, 400), abs=4)
+
+
+def test_zoom_offset_is_clamped(zoom_area):
+    zoom_area.set_zoom_image(big_image(), center=(0, 0))
+    offset = zoom_area.zoom_offset()
+    assert (offset.x(), offset.y()) == (0, 0)  # 左上より外は見せない
+
+    zoom_area.set_zoom_image(Image.new("RGB", (50, 40)))  # 表示より小さい画像は中央
+    rect = zoom_area.image_rect()
+    assert rect.center().x() == pytest.approx(200, abs=1)
+    assert rect.center().y() == pytest.approx(150, abs=1)
+
+
+def test_zoom_drag_pans(qtbot, zoom_area):
+    zoom_area.set_zoom_image(big_image())
+    before = zoom_area.zoom_offset()
+
+    qtbot.mousePress(zoom_area, Qt.MouseButton.LeftButton, pos=QPoint(200, 150))
+    qtbot.mouseMove(zoom_area, QPoint(150, 120))
+    qtbot.mouseRelease(zoom_area, Qt.MouseButton.LeftButton, pos=QPoint(150, 120))
+
+    after = zoom_area.zoom_offset()
+    assert (after.x() - before.x(), after.y() - before.y()) == (-50, -30)
+
+
+def test_zoom_wheel_pans(zoom_area):
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QWheelEvent
+
+    zoom_area.set_zoom_image(big_image())
+    before = zoom_area.zoom_offset()
+    event = QWheelEvent(
+        QPointF(200, 150),
+        QPointF(200, 150),
+        QPoint(0, -40),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+    zoom_area.wheelEvent(event)
+
+    assert zoom_area.zoom_offset().y() == before.y() - 40
+
+
+def test_leave_zoom(zoom_area):
+    zoom_area.set_zoom_image(big_image())
+    zoom_area.set_zoom_image(None)
+    assert not zoom_area.is_zoomed()
+    assert zoom_area.image_rect().width() <= 400
+
+
+def test_double_click_signal(qtbot, zoom_area):
+    with qtbot.waitSignal(zoom_area.double_clicked) as blocker:
+        qtbot.mouseDClick(zoom_area, Qt.MouseButton.LeftButton, pos=QPoint(10, 20))
+    assert (blocker.args[0].x(), blocker.args[0].y()) == (10, 20)
