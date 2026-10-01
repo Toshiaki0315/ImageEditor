@@ -9,6 +9,7 @@ from enum import Enum
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from image_editor.core.io import normalize_mode
+from image_editor.core.parallel import filter_image
 
 # --- 係数（初版の目安値。requirements.md §5.4） ------------------------------
 
@@ -402,7 +403,7 @@ def soft_focus(image: Image.Image) -> Image.Image:
 
     ぼかしの大きさは短辺に比例させるので、縮小プレビューと原寸で見た目がそろう。
     """
-    blurred = image.filter(ImageFilter.GaussianBlur(_radius(image, SOFT_RADIUS_RATIO)))
+    blurred = filter_image(image, ImageFilter.GaussianBlur(_radius(image, SOFT_RADIUS_RATIO)))
     threshold = SOFT_GLOW_THRESHOLD
     glow_curve = [
         max(0.0, (v / 255 - threshold) / (1 - threshold)) * 255 * SOFT_GLOW_STRENGTH
@@ -418,10 +419,11 @@ def hdr(image: Image.Image) -> Image.Image:
     大きな半径のアンシャープマスクで部分ごとの明暗差を強め、暗部を持ち上げる。
     半径は短辺に比例させるので、縮小プレビューと原寸で見た目がそろう。
     """
-    detailed = image.filter(
+    detailed = filter_image(
+        image,
         ImageFilter.UnsharpMask(
             radius=_radius(image, HDR_RADIUS_RATIO), percent=HDR_DETAIL_PERCENT, threshold=0
-        )
+        ),
     )
     return _tone(detailed, lambda x: x**HDR_GAMMA, saturation=HDR_SATURATION)
 

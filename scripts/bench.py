@@ -21,8 +21,16 @@ from PIL import Image
 from PyQt6.QtCore import QSize, Qt
 
 from image_editor.core.filters import FilterType
+from image_editor.core.frames import FrameType
 from image_editor.core.io import load_image, save_image
-from image_editor.core.pipeline import EditSettings, apply_edits, make_preview, scale_settings
+from image_editor.core.pipeline import (
+    EditSettings,
+    apply_edits,
+    make_preview,
+    render_preview_with_histogram,
+)
+from image_editor.core.shapes import ShapeType
+from image_editor.core.text import TextSettings
 from image_editor.core.transform import CropRect
 from image_editor.ui.qt_image import pil_to_qimage
 
@@ -33,6 +41,25 @@ DISPLAY_SIZE = QSize(850 * 2, 740 * 2)
 # NFR-01 / NFR-02 の目標値（秒）
 TARGET_LOAD_TO_PREVIEW = 1.0
 TARGET_PREVIEW_UPDATE = 0.2
+
+# 効果をほぼすべてかけた重い設定（プレビュー更新がいちばん遅くなる組み合わせ）
+HEAVY_SETTINGS = EditSettings(
+    exposure=0.5,
+    brightness=10,
+    contrast=20,
+    temperature=5000,
+    saturation=20,
+    sharpen=50,
+    blur=10,
+    denoise=50,
+    filter=FilterType.HDR,
+    vignette=50,
+    aging=30,
+    frame=FrameType.POLAROID,
+    shape=ShapeType.ROUNDED,
+    corner_radius=20,
+    text=TextSettings(text="© 2026"),
+)
 
 
 def measure(func: Callable[[], T], repeat: int) -> tuple[float, T]:
@@ -106,20 +133,31 @@ def main() -> None:
         rows = []
         preview_times = []
         crop = (original.width // 10, original.height // 10)
-        for filter_type in FilterType:
-            settings = EditSettings(
-                crop=None if filter_type is FilterType.NONE else _crop_rect(crop, original.size),
-                width=original.width // 2,
-                filter=filter_type,
+        cases = [
+            (
+                filter_type.label,
+                EditSettings(
+                    crop=None
+                    if filter_type is FilterType.NONE
+                    else _crop_rect(crop, original.size),
+                    width=original.width // 2,
+                    filter=filter_type,
+                ),
             )
-            scaled = scale_settings(settings, factor)
+            for filter_type in FilterType
+        ]
+        cases.append(("★ 重い設定（効果をほぼすべて）", HEAVY_SETTINGS))
+        for label, settings in cases:
+            for trimmed in (False, True):
+                # アプリと同じく、プレビューとヒストグラムを描いて Qt の画像にする
+                def update(s: EditSettings = settings, t: bool = trimmed) -> object:
+                    image, _ = render_preview_with_histogram(preview, s, factor, trimmed=t)
+                    return pil_to_qimage(image)
 
-            def update(s: EditSettings = scaled) -> object:
-                return pil_to_qimage(apply_edits(preview, s))
-
-            elapsed, _ = measure(update, args.repeat)
-            preview_times.append(elapsed)
-            rows.append((f"プレビュー更新: {filter_type.label}", elapsed))
+                elapsed, _ = measure(update, args.repeat)
+                preview_times.append(elapsed)
+                view = "切り抜き表示" if trimmed else "全体表示"
+                rows.append((f"プレビュー更新: {label}（{view}）", elapsed))
         print_rows("プレビュー更新（縮小版）", rows)
 
         # --- 原寸処理と保存 (NFR-03 はワーカースレッドで実行) ---
@@ -128,6 +166,8 @@ def main() -> None:
             settings = EditSettings(filter=filter_type)
             elapsed, _ = measure(lambda s=settings: apply_edits(original, s), args.repeat)
             rows.append((f"原寸処理: {filter_type.label}", elapsed))
+        elapsed, _ = measure(lambda: apply_edits(original, HEAVY_SETTINGS), args.repeat)
+        rows.append(("原寸処理: ★ 重い設定（効果をほぼすべて）", elapsed))
         edited = apply_edits(original, EditSettings(filter=FilterType.SEPIA))
         for suffix in (".jpg", ".png"):
             out = tmp_dir / f"out{suffix}"
@@ -150,7 +190,7 @@ def print_rows(title: str, rows: list[tuple[str, float]]) -> None:
     """計測結果を表形式で表示する。"""
     print(f"## {title}")
     for label, seconds in rows:
-        print(f"  {label:<40} {seconds * 1000:8.0f} ms")
+        print(f"  {label:<48} {seconds * 1000:8.0f} ms")
     print()
 
 
