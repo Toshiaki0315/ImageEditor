@@ -2402,14 +2402,27 @@ def test_zoom_follows_setting_changes(loaded_window, qtbot):
     )
 
 
-def test_old_zoom_result_is_ignored(loaded_window):
+def test_old_zoom_result_is_ignored(loaded_window, qtbot):
     loaded_window.show_actual_size()
     old = loaded_window._zoom_generation
+    old_task = next(iter(loaded_window._zoom_tasks))
     loaded_window._render_zoom()  # 設定が変わって依頼し直した
 
-    loaded_window._on_zoom_finished(Image.new("RGB", (5, 5)), old)
+    loaded_window._on_zoom_finished(old_task, Image.new("RGB", (5, 5)), old)
 
     assert loaded_window.is_zoom_rendering()  # 古い結果では終わらない
+    wait_zoom(qtbot, loaded_window)
+
+
+def test_running_zoom_tasks_are_kept_until_finished(loaded_window, qtbot):
+    # 依頼し直しても、実行中の古いタスクは終わるまで保持する（片付けられると落ちる）
+    loaded_window.show_actual_size()
+    for _ in range(5):
+        loaded_window._render_zoom()
+    assert len(loaded_window._zoom_tasks) >= 1
+
+    qtbot.waitUntil(lambda: not loaded_window._zoom_tasks, timeout=10000)
+    assert not loaded_window.is_zoom_rendering()
 
 
 def test_zoom_compare_shows_before(loaded_window, qtbot):

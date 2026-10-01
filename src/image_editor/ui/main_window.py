@@ -192,10 +192,12 @@ class MainWindow(QMainWindow):
         self._history_timer.timeout.connect(self._commit_history)
         # 加工前の画像を表示中か（\ キーか「加工前」ボタンを押している間）
         self._comparing = False
-        # 100% 表示: 表示中か、最新の依頼の番号、処理中のタスク、表示の中央にしたい点
+        # 100% 表示: 表示中か、最新の依頼の番号、最新の依頼を処理中か、表示の中央にしたい点
         self._zoomed = False
         self._zoom_generation = 0
-        self._zoom_task: ZoomTask | None = None
+        self._zoom_pending = False
+        # 実行中のタスクはすべて終わるまで保持する（実行中に Python 側で片付けられると落ちる）
+        self._zoom_tasks: set[ZoomTask] = set()
         self._zoom_center: tuple[float, float] | None = None
         self._zoom_timer = QTimer(self)
         self._zoom_timer.setSingleShot(True)
@@ -504,11 +506,12 @@ class MainWindow(QMainWindow):
 
     def is_zoom_rendering(self) -> bool:
         """100% 表示のための原寸の処理中かを返す。"""
-        return self._zoom_task is not None
+        return self._zoom_pending
 
     def _leave_zoom(self) -> None:
         self._zoomed = False
         self._zoom_generation += 1  # 処理中の結果は使わない
+        self._zoom_pending = False
         self._zoom_timer.stop()
         self._zoom_center = None
         self.drop_area.set_zoom_image(None)
@@ -524,25 +527,32 @@ class MainWindow(QMainWindow):
         self._zoom_generation += 1
         task = ZoomTask(self.loaded.image, shown, self._zoom_generation)
         task.setAutoDelete(False)  # 完了通知を受け取るまで Python 側で保持する
-        task.signals.finished.connect(self._on_zoom_finished)
-        task.signals.failed.connect(self._on_zoom_failed)
-        self._zoom_task = task
+        task.signals.finished.connect(
+            lambda image, generation, task=task: self._on_zoom_finished(task, image, generation)
+        )
+        task.signals.failed.connect(
+            lambda message, generation, task=task: self._on_zoom_failed(task, message, generation)
+        )
+        self._zoom_tasks.add(task)
+        self._zoom_pending = True
         self._update_badge()
         self._thread_pool.start(task)
 
-    def _on_zoom_finished(self, image: Image.Image, generation: int) -> None:
+    def _on_zoom_finished(self, task: ZoomTask, image: Image.Image, generation: int) -> None:
+        self._zoom_tasks.discard(task)
         if generation != self._zoom_generation:
             return  # 古い依頼の結果（設定がその後変わった）
-        self._zoom_task = None
+        self._zoom_pending = False
         if self._zoomed:
             self.drop_area.set_zoom_image(image, self._zoom_center)
             self._zoom_center = None
         self._update_badge()
 
-    def _on_zoom_failed(self, message: str, generation: int) -> None:
+    def _on_zoom_failed(self, task: ZoomTask, message: str, generation: int) -> None:
+        self._zoom_tasks.discard(task)
         if generation != self._zoom_generation:
             return
-        self._zoom_task = None
+        self._zoom_pending = False
         self.fit_to_window()
         self._show_error("100% で表示できません", message)
 
@@ -573,7 +583,7 @@ class MainWindow(QMainWindow):
             parts.append(COMPARE_BADGE_TEXT)
         if self._zoomed:
             parts.append(ZOOM_BADGE_TEXT)
-            if self._zoom_task is not None:
+            if self._zoom_pending:
                 parts.append(ZOOM_RENDERING_TEXT)
         self.drop_area.set_badge(" ・ ".join(parts) if parts else None)
 
@@ -1052,7 +1062,7 @@ class MainWindow(QMainWindow):
         # 保存中のファイルが途中で切れないよう、完了を待ってから閉じる（一括処理は中止を求める）
         if self._batch_task is not None:
             self._batch_task.cancel()
-        if self.is_busy() or self._zoom_task is not None:
+        if self.is_busy() or self._zoom_tasks:
             self._thread_pool.waitForDone()
         super().closeEvent(event)
 
