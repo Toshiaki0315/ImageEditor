@@ -17,7 +17,7 @@ VERSION = re.search(
     r'__version__ = "([^"]+)"', (SRC / "image_editor" / "__init__.py").read_text()
 ).group(1)
 
-# 対応 5 形式 (FR-IO-01〜05) の UTI。Finder の「このアプリケーションで開く」と Dock へのドロップ用
+# 対応形式 (FR-IO-01〜05, HEIC/HEIF) の UTI。Finder の「このアプリケーションで開く」と Dock へのドロップ用
 DOCUMENT_TYPES = [
     {
         "CFBundleTypeName": "Image",
@@ -29,6 +29,8 @@ DOCUMENT_TYPES = [
             "com.compuserve.gif",
             "public.tiff",
             "com.microsoft.bmp",
+            "public.heic",
+            "public.heif",
         ],
     }
 ]

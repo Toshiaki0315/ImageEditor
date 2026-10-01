@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
+
+# HEIC / HEIF（iPhone の写真）を Image.open で読めるようにする（読み込みだけに使う）
+register_heif_opener()
 
 StrPath = str | os.PathLike[str]
 
@@ -21,7 +25,14 @@ _EXTENSION_FORMATS: dict[str, str] = {
     ".bmp": "BMP",
 }
 
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(_EXTENSION_FORMATS)
+# 保存できる拡張子
+SAVABLE_EXTENSIONS: frozenset[str] = frozenset(_EXTENSION_FORMATS)
+# 読み込みだけできる拡張子（保存するときは JPEG にする）
+READ_ONLY_EXTENSIONS: frozenset[str] = frozenset({".heic", ".heif"})
+# 読み込める拡張子
+SUPPORTED_EXTENSIONS: frozenset[str] = SAVABLE_EXTENSIONS | READ_ONLY_EXTENSIONS
+# 読み込みだけできる形式の画像を保存するときの拡張子
+FALLBACK_SAVE_SUFFIX = ".jpg"
 
 # 読み込みを許可する Pillow の形式（MPO は一部カメラの JPEG）
 _LOADABLE_FORMATS: dict[str, str] = {
@@ -31,6 +42,7 @@ _LOADABLE_FORMATS: dict[str, str] = {
     "GIF": "GIF",
     "TIFF": "TIFF",
     "BMP": "BMP",
+    "HEIF": "HEIF",  # HEIC も含む
 }
 
 # 透過を持てない保存形式
@@ -82,6 +94,17 @@ def is_supported(path: StrPath) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
 
 
+def is_savable(path: StrPath) -> bool:
+    """拡張子が保存できる形式かどうかを返す（大文字・小文字は区別しない）。"""
+    return Path(path).suffix.lower() in SAVABLE_EXTENSIONS
+
+
+def save_suffix(path: StrPath) -> str:
+    """元の画像を保存するときの拡張子（保存できない形式なら .jpg）を返す。"""
+    suffix = Path(path).suffix
+    return suffix if is_savable(path) else FALLBACK_SAVE_SUFFIX
+
+
 def format_for_path(path: StrPath) -> str:
     """拡張子から Pillow の保存形式名を返す。非対応なら UnsupportedImageError。"""
     suffix = Path(path).suffix.lower()
@@ -94,12 +117,14 @@ def format_for_path(path: StrPath) -> str:
 def default_save_path(path: Path) -> Path:
     """保存ダイアログの初期パス `<元の名前>_edited.<元の拡張子>` を返す。
 
-    すでにあれば `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
+    元の形式が保存できない（HEIC など）なら拡張子は .jpg にする。すでにあれば
+    `_edited_2`、`_edited_3` … と、既存のファイルと重ならない名前にする。
     """
-    candidate = path.with_name(f"{path.stem}_edited{path.suffix}")
+    suffix = save_suffix(path)
+    candidate = path.with_name(f"{path.stem}_edited{suffix}")
     number = 2
     while candidate.exists():
-        candidate = path.with_name(f"{path.stem}_edited_{number}{path.suffix}")
+        candidate = path.with_name(f"{path.stem}_edited_{number}{suffix}")
         number += 1
     return candidate
 

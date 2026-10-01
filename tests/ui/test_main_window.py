@@ -2497,3 +2497,43 @@ def test_load_leaves_zoom(loaded_window, qtbot, tmp_path, questions):
     assert not loaded_window.is_zoomed()
     assert not loaded_window.drop_area.is_zoomed()
     assert loaded_window.drop_area.crop_overlay.is_active()
+
+
+# --- HEIC（読み込みのみ） -------------------------------------------------------------
+
+
+def test_open_heic_and_save_as_jpeg(window, qtbot, tmp_path, monkeypatch):
+    source = tmp_path / "IMG_0001.HEIC"
+    Image.new("RGB", (60, 40), (220, 60, 30)).save(source, format="HEIF")
+    assert window.load_file(source)
+    assert window.loaded.format == "HEIF"
+    calls = []
+
+    def fake_dialog(parent, caption, directory, filters, selected):
+        calls.append((directory, selected))
+        return str(tmp_path / "out"), selected  # 拡張子なし → 選んだ形式（JPEG）
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_dialog)
+
+    with qtbot.waitSignal(window.save_finished, timeout=10000) as blocker:
+        window.save_file_dialog()
+
+    directory, selected = calls[0]
+    assert directory == str(tmp_path / "IMG_0001_edited.jpg")
+    assert selected == "JPEG (*.jpg *.jpeg)"
+    assert blocker.args[0] == tmp_path / "out.jpg"
+    assert load_image(tmp_path / "out.jpg").image.size == (60, 40)
+
+
+def test_save_dialog_rejects_heic_extension(window, tmp_path, monkeypatch, warnings):
+    source = tmp_path / "a.png"
+    Image.new("RGB", (10, 10)).save(source)
+    window.load_file(source)
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "out.heic"), "")
+    )
+
+    window.save_file_dialog()
+
+    assert warnings and "対応していない拡張子です: .heic" in warnings[-1][1]
+    assert "HEIC / HEIF は読み込みのみ" in warnings[-1][1]

@@ -5,17 +5,21 @@ import pytest
 from PIL import Image
 
 from image_editor.core.io import (
+    SAVABLE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     LoadedImage,
     SaveOptions,
     UnsupportedImageError,
+    default_save_path,
     flatten_alpha,
     format_for_path,
+    is_savable,
     is_supported,
     load_image,
     normalize_mode,
     prepare_exif,
     save_image,
+    save_suffix,
 )
 
 RED = (255, 0, 0)
@@ -35,19 +39,46 @@ def make_sample(mode: str = "RGB") -> Image.Image:
 
 
 @pytest.mark.parametrize(
-    "name", ["a.png", "a.jpg", "a.jpeg", "a.gif", "a.tif", "a.tiff", "a.bmp", "A.PNG", "b.JpEg"]
+    "name",
+    [
+        "a.png",
+        "a.jpg",
+        "a.jpeg",
+        "a.gif",
+        "a.tif",
+        "a.tiff",
+        "a.bmp",
+        "A.PNG",
+        "b.JpEg",
+        "a.heic",
+        "IMG_0001.HEIC",
+        "a.heif",
+    ],
 )
 def test_is_supported(name):
     assert is_supported(name)
 
 
-@pytest.mark.parametrize("name", ["a.webp", "a.heic", "a.txt", "noext", "png"])
+@pytest.mark.parametrize("name", ["a.webp", "a.txt", "noext", "png"])
 def test_is_not_supported(name):
     assert not is_supported(name)
 
 
 def test_supported_extensions():
-    assert {".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff", ".bmp"} == SUPPORTED_EXTENSIONS
+    assert {".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff", ".bmp"} == SAVABLE_EXTENSIONS
+    assert SAVABLE_EXTENSIONS | {".heic", ".heif"} == SUPPORTED_EXTENSIONS
+
+
+@pytest.mark.parametrize(
+    ("name", "savable"), [("a.jpg", True), ("a.HEIC", False), ("a.heif", False)]
+)
+def test_is_savable(name, savable):
+    assert is_savable(name) is savable
+
+
+def test_save_suffix():
+    assert save_suffix("a.PNG") == ".PNG"
+    assert save_suffix("IMG_0001.HEIC") == ".jpg"
 
 
 def test_format_for_path():
@@ -468,3 +499,46 @@ def test_save_without_exif(tmp_path):
     path = tmp_path / "out.jpg"
     save_image(make_sample(), path)
     assert len(read_exif(path)[0]) == 0
+
+
+# --- HEIC / HEIF（読み込みのみ） -------------------------------------------------
+
+
+def make_heic(path, size=(60, 40), orientation=None):
+    """HEIC ファイルを作る（pillow-heif で書く）。左半分が赤、右半分が青。"""
+    image = Image.new("RGB", size, BLUE)
+    image.paste(RED, (0, 0, size[0] // 2, size[1]))
+    exif = Image.Exif()
+    exif[0x0132] = "2026:01:02 03:04:05"
+    if orientation is not None:
+        exif[0x0112] = orientation
+    image.save(path, format="HEIF", exif=exif.tobytes(), quality=95)
+    return path
+
+
+def test_load_heic(tmp_path):
+    loaded = load_image(make_heic(tmp_path / "IMG_0001.HEIC"))
+
+    assert loaded.format == "HEIF"
+    assert loaded.image.mode == "RGB"
+    assert loaded.image.size == (60, 40)
+    assert _close(loaded.image.getpixel((5, 20)), RED, tolerance=30)
+    assert _close(loaded.image.getpixel((55, 20)), BLUE, tolerance=30)
+    exif = Image.Exif()
+    exif.load(loaded.exif)
+    assert exif[0x0132] == "2026:01:02 03:04:05"  # 撮影日時を残す
+
+
+def test_load_heic_applies_orientation(tmp_path):
+    # 向き 6（時計回りに 90° 回して見る）は読み込み時に補正する
+    loaded = load_image(make_heic(tmp_path / "rotated.heic", orientation=6))
+    assert loaded.image.size == (40, 60)
+
+
+def test_heic_cannot_be_saved(tmp_path):
+    with pytest.raises(UnsupportedImageError):
+        save_image(make_sample(), tmp_path / "x.heic")
+
+
+def test_default_save_path_for_heic_is_jpeg(tmp_path):
+    assert default_save_path(tmp_path / "IMG_0001.HEIC") == tmp_path / "IMG_0001_edited.jpg"

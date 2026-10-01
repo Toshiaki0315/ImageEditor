@@ -367,3 +367,11 @@ def test_double_click_signal(qtbot, zoom_area):
     with qtbot.waitSignal(zoom_area.double_clicked) as blocker:
         qtbot.mouseDClick(zoom_area, Qt.MouseButton.LeftButton, pos=QPoint(10, 20))
     assert (blocker.args[0].x(), blocker.args[0].y()) == (10, 20)
+
+
+def test_accepts_heic(qtbot, tmp_path):
+    from image_editor.ui.drop_area import _accepts
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(tmp_path / "IMG_0001.HEIC"))])
+    assert _accepts(mime)

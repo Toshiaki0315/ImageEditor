@@ -31,6 +31,12 @@ codesign --verify --deep --strict "$APP"
 echo "==> 起動確認"
 QT_QPA_PLATFORM=offscreen "$APP/Contents/MacOS/ImageEditor" --smoke-test
 
+echo "==> HEIC を開けるかの確認（pillow-heif が .app に入っているか）"
+SAMPLE_DIR="$(mktemp -d)"
+trap 'rm -rf "$SAMPLE_DIR"' EXIT
+python -c "import sys; from PIL import Image; from pillow_heif import register_heif_opener; register_heif_opener(); Image.new('RGB', (64, 48), (200, 60, 30)).save(sys.argv[1], format='HEIF')" "$SAMPLE_DIR/sample.heic"
+QT_QPA_PLATFORM=offscreen "$APP/Contents/MacOS/ImageEditor" --smoke-test "$SAMPLE_DIR/sample.heic"
+
 if [[ "${1:-}" == "--install" ]]; then
     echo "==> $INSTALL_TO にインストール"
     rm -rf "$INSTALL_TO"

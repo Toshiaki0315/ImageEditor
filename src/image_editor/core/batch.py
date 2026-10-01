@@ -13,6 +13,7 @@ from image_editor.core.io import (
     load_image,
     prepare_exif,
     save_image,
+    save_suffix,
 )
 from image_editor.core.pipeline import EditSettings, apply_edits, effective_crop
 from image_editor.core.presets import Preset, apply_preset
@@ -61,16 +62,18 @@ def batch_settings(options: BatchOptions, image_size: tuple[int, int]) -> EditSe
 def output_path(source: Path, out_dir: Path) -> Path:
     """保存先のパスを返す。out_dir に元と同じ名前・拡張子で保存する。
 
-    同じ名前のファイルがすでにある、または元のファイルそのものになる場合は
-    `<名前>_edited`、`_edited_2` … と、既存のファイルと重ならない名前にする。
+    元の形式が保存できない（HEIC など）なら拡張子は .jpg にする。同じ名前のファイルが
+    すでにある、または元のファイルそのものになる場合は `<名前>_edited`、`_edited_2` … と、
+    既存のファイルと重ならない名前にする。
     """
-    candidate = out_dir / source.name
+    suffix = save_suffix(source)
+    candidate = out_dir / f"{source.stem}{suffix}"
     if not candidate.exists() and not is_same_file(candidate, source):
         return candidate
     number = 1
     while True:
-        suffix = "_edited" if number == 1 else f"_edited_{number}"
-        candidate = out_dir / f"{source.stem}{suffix}{source.suffix}"
+        edited = "_edited" if number == 1 else f"_edited_{number}"
+        candidate = out_dir / f"{source.stem}{edited}{suffix}"
         if not candidate.exists() and not is_same_file(candidate, source):
             return candidate
         number += 1

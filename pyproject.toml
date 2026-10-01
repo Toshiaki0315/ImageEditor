@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "PyQt6>=6.6",
     "Pillow>=10.3",
+    "pillow-heif>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -198,3 +198,22 @@ def test_batch_draws_watermark_from_preset(tmp_path):
     saved = load_image(path).image
     assert saved.size == (200, 150)
     assert saved.getpixel((100, 75)) == (0, 255, 0)
+
+
+def test_heic_is_saved_as_jpeg(tmp_path):
+    # HEIC は保存できないので、まとめて処理では JPEG で保存する
+    source = tmp_path / "in" / "IMG_0001.HEIC"
+    source.parent.mkdir()
+    Image.new("RGB", (60, 40), (220, 60, 30)).save(source, format="HEIF")
+
+    assert output_path(source, tmp_path / "out") == tmp_path / "out" / "IMG_0001.jpg"
+    path = process_image(source, tmp_path / "out", BatchOptions(look=PLAIN))
+    assert path.suffix == ".jpg"
+    assert load_image(path).image.size == (60, 40)
+
+
+def test_collect_images_includes_heic(tmp_path):
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    Image.new("RGB", (8, 8)).save(folder / "a.HEIC", format="HEIF")
+    assert collect_images([folder]) == [folder / "a.HEIC"]
