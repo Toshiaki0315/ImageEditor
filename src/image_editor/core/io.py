@@ -78,7 +78,10 @@ class LoadedImage:
     format: str
     is_animated: bool
     path: Path
-    exif: bytes | None = None  # 元ファイルの EXIF（なければ None）
+    exif: bytes | None = None  # 元ファイルの EXIF（保存用に整え直したもの。なければ None）
+    # 元ファイルの EXIF のバイト列そのもの（"Exif\0\0" で始まることもある）。MakerNote の中の
+    # 値の位置がずれないよう、表示 (core.exif_info) にはこちらを使う。TIFF ファイルでは None
+    raw_exif: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,7 @@ def load_image(path: StrPath) -> LoadedImage:
             is_animated = getattr(source, "n_frames", 1) > 1
             source.seek(0)
             exif = _read_exif(source)
+            raw_exif = source.info.get("exif")
             # exif_transpose は常に新しい画像を返すので、ファイルを閉じても使える
             image = ImageOps.exif_transpose(source)
             image.load()
@@ -185,6 +189,7 @@ def load_image(path: StrPath) -> LoadedImage:
         is_animated=is_animated,
         path=path,
         exif=exif,
+        raw_exif=raw_exif if isinstance(raw_exif, bytes) else None,
     )
 
 

@@ -39,6 +39,7 @@ TAB_ADJUST_TEXT = "加工"
 TAB_CROP_TEXT = "切り抜き"
 TAB_OUTPUT_TEXT = "出力"
 TAB_DIORAMA_TEXT = "ジオラマ"
+TAB_EXIF_TEXT = "EXIF"
 DIORAMA_NOTE_TEXT = (
     "ぼかしを 0 より大きくすると、ピントの帯（プレビューの実線の間）だけをくっきり残し、"
     "外側に向かってぼかします（点線でぼけきります）。街並みを見下ろした写真に向いています。"

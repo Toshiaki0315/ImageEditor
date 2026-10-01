@@ -25,3 +25,11 @@ def presets_path(tmp_path, monkeypatch):
     path = tmp_path / "presets" / "presets.json"
     monkeypatch.setattr(main_window, "default_presets_path", lambda: path)
     return path
+
+
+@pytest.fixture
+def exif_samples():
+    """テスト用に EXIF を組み立てる関数をまとめたモジュール（tests/exif_samples.py）。"""
+    import exif_samples
+
+    return exif_samples

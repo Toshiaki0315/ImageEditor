@@ -2,6 +2,7 @@ import pytest
 from PyQt6.QtCore import Qt
 
 from image_editor.core.diorama import DioramaDirection
+from image_editor.core.exif_info import ExifEntry, ExifGroup, ExifInfo, GpsPosition
 from image_editor.core.filters import FilterType
 from image_editor.core.frames import FrameType
 from image_editor.core.io import SaveOptions
@@ -1427,7 +1428,7 @@ def tab_of(panel: SettingsPanel, widget) -> int:
 
 def test_tabs(panel):
     names = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-    assert names == ["加工", "切り抜き", "出力", "ジオラマ"]
+    assert names == ["加工", "切り抜き", "出力", "ジオラマ", "EXIF"]
     assert panel.current_tab() == 0
     assert not panel.is_diorama_tab()
     panel.set_current_tab(3)
@@ -1568,3 +1569,46 @@ def test_diorama_drag_counts_as_adjusting(panel):
     assert panel.is_adjusting()
     panel.diorama_width_slider.setSliderDown(False)
     assert not panel.is_adjusting()
+
+
+# --- EXIF ----------------------------------------------------------------------------
+
+EXIF_TAB = 4
+
+
+def sample_exif(gps: bool = False) -> ExifInfo:
+    entries = [
+        ExifEntry(ExifGroup.IMAGE, "Make", "Canon"),
+        ExifEntry(ExifGroup.EXIF, "ExposureTime", "1/125"),
+        ExifEntry(ExifGroup.MAKERNOTE, "SerialNumber", "123"),
+    ]
+    position = GpsPosition(35.0, 139.0) if gps else None
+    return ExifInfo(tuple(entries), maker_note="Canon", gps=position)
+
+
+def test_exif_tab_disabled_without_exif(panel):
+    assert not panel.is_exif_enabled()  # 読み込んだだけでは EXIF なし
+    panel.set_current_tab(EXIF_TAB)
+    assert panel.current_tab() != EXIF_TAB  # グレーアウトしたタブは開けない
+
+    panel.set_exif_info(sample_exif())
+    assert panel.is_exif_enabled()
+    panel.set_current_tab(EXIF_TAB)
+    assert panel.current_tab() == EXIF_TAB
+
+    panel.set_exif_info(ExifInfo())  # 空
+    assert not panel.is_exif_enabled()
+    assert panel.current_tab() == 0  # 開いていたら「加工」に移る
+
+
+def test_exif_cleared_on_new_image(panel):
+    panel.set_exif_info(sample_exif())
+    panel.set_image_size((100, 100))
+    assert not panel.is_exif_enabled()
+    assert panel.exif_view.info() is None
+
+
+def test_exif_tab_without_image(qtbot):
+    widget = SettingsPanel()
+    qtbot.addWidget(widget)
+    assert not widget.is_exif_enabled()

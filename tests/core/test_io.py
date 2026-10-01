@@ -591,3 +591,20 @@ def test_save_edited_follows_options(tmp_path):
     no_source = tmp_path / "none.png"
     save_edited(image, no_source, SaveOptions(), None)
     assert no_source.exists()
+
+
+def test_load_keeps_raw_exif(tmp_path):
+    exif = Image.Exif()
+    exif[0x010F] = "RawMaker"
+    path = tmp_path / "raw.jpg"
+    Image.new("RGB", (4, 4)).save(path, exif=exif.tobytes())
+
+    loaded = load_image(path)
+
+    assert loaded.raw_exif is not None
+    assert loaded.raw_exif.startswith(b"Exif\0\0")
+    assert b"RawMaker" in loaded.raw_exif
+
+    plain = tmp_path / "plain.png"
+    Image.new("RGB", (4, 4)).save(plain)
+    assert load_image(plain).raw_exif is None
