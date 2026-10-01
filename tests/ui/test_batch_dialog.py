@@ -106,3 +106,21 @@ def test_cancel_button_rejects(dialog, qtbot):
     cancel = [b for b in dialog.buttons.buttons() if b.text() == "キャンセル"][0]
     with qtbot.waitSignal(dialog.rejected):
         cancel.click()
+
+
+def test_long_out_dir_is_elided_without_widening(dialog, qtbot, tmp_path):
+    # 長い保存先を選んでもダイアログが広がらず、途中を省略して表示する (#96)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    min_width = dialog.minimumSizeHint().width()
+    width = dialog.width()
+    long_dir = tmp_path.joinpath(*["very-long-folder-name"] * 12)
+    dialog.set_out_dir(long_dir)
+    qtbot.wait(10)
+
+    assert dialog.minimumSizeHint().width() == min_width
+    assert dialog.width() == width
+    assert dialog.out_dir_label.text() == str(long_dir)
+    assert dialog.out_dir_label.toolTip() == str(long_dir)
+    shown = dialog.out_dir_label.displayed_text()
+    assert "…" in shown and shown != str(long_dir)
