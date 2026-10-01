@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QMouseEvent
@@ -143,6 +144,61 @@ def amount_slider(
     row.addWidget(slider)
     row.addWidget(label)
     return slider, label, row
+
+
+@dataclass(frozen=True)
+class Adjustment:
+    """設定 (EditSettings) の 1 項目と、それを操作するスライダー・値の表示の対応。
+
+    スライダーは整数しか持てないので、設定の値との換算 (to_setting / to_slider) を持つ
+    （例: 露出は「EV × 10」、色温度は「ケルビン ÷ 100」でスライダーに持つ）。
+    """
+
+    field: str  # EditSettings の項目名
+    slider: ResettableSlider
+    label: QLabel  # 今の値の表示
+    to_setting: Callable[[int], Any]
+    to_slider: Callable[[Any], int]
+    text: Callable[[Any], str]  # 値の表示の書式
+
+    def value(self) -> Any:
+        """設定の値を返す。"""
+        return self.to_setting(self.slider.value())
+
+    def set_value(self, value: Any) -> None:
+        """設定の値をスライダーに反映する（変われば valueChanged を発行する）。"""
+        self.slider.setValue(self.to_slider(value))
+
+    def update_label(self) -> None:
+        """値の表示を今の値に合わせる。"""
+        self.label.setText(self.text(self.value()))
+
+
+def _same(value: Any) -> Any:
+    return value
+
+
+def adjustment(
+    field: str,
+    minimum: int,
+    maximum: int,
+    default: int = 0,
+    *,
+    to_setting: Callable[[int], Any] = _same,
+    to_slider: Callable[[Any], int] = _same,
+    text: Callable[[Any], str] = str,
+    page_step: int | None = None,
+) -> tuple[Adjustment, QHBoxLayout]:
+    """設定の 1 項目を操作するスライダーと値の表示を作り、横に並べた行と一緒に返す。
+
+    minimum・maximum・default はスライダーの値（設定の値を to_slider で換算したもの）。
+    """
+    slider, label, row = amount_slider(minimum, maximum, default)
+    if page_step is not None:
+        slider.setPageStep(page_step)
+    item = Adjustment(field, slider, label, to_setting, to_slider, text)
+    item.update_label()
+    return item, row
 
 
 def spin_box(minimum: int, maximum: int, suffix: str) -> QSpinBox:
