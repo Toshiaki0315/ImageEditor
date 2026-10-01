@@ -19,12 +19,12 @@ import exifread
 
 from image_editor.core.io import LoadedImage
 from image_editor.core.makernote import read_maker_note
+from image_editor.core.tiff import tiff_block  # noqa: F401 - 外からも使う
 
 # 値の表示の長さの上限（それより長ければ省略する）
 MAX_VALUE_LENGTH = 300
 # TIFF ファイルから MakerNote を自前で読むとき、ファイル全体を読み込む大きさの上限
 MAX_TIFF_READ = 64 * 1024 * 1024
-EXIF_HEADER = b"Exif\0\0"
 
 # exifread の警告（壊れたタグなど）は表示に関係ないので出さない
 logging.getLogger("exifread").setLevel(logging.ERROR)
@@ -128,19 +128,6 @@ class ExifInfo:
             if entries:
                 result.append((group, entries))
         return result
-
-
-def tiff_block(raw_exif: bytes | None) -> bytes | None:
-    """読み込み時の EXIF のバイト列から、TIFF の部分（"II*\\0" / "MM\\0*" から）を返す。
-
-    先頭の "Exif\\0\\0" は取り除く。TIFF の形でなければ None。
-    """
-    if not raw_exif:
-        return None
-    data = raw_exif[len(EXIF_HEADER) :] if raw_exif.startswith(EXIF_HEADER) else raw_exif
-    if data[:4] in (b"II*\0", b"MM\0*"):
-        return data
-    return None
 
 
 def read_exif_info(raw_exif: bytes | None = None, tiff_path: Path | None = None) -> ExifInfo:

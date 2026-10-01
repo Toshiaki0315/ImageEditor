@@ -12,17 +12,21 @@ import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from image_editor.core.tiff import (
+    TAG_EXIF_IFD,
+    TAG_MAKERNOTE,
+    TYPE_SIZES,
+    IfdEntry,
+    order_of,
+    pointer,
+    read_ifd,
+    value_bytes,
+)
+
 # 値の表示で並べる数の上限（それより多ければ省略する）
 MAX_VALUES_SHOWN = 16
-# IFD として正しそうか確かめるときの、1 つの IFD の項目数の上限
-MAX_IFD_ENTRIES = 1000
-
-_TAG_EXIF_IFD = 0x8769
-_TAG_MAKERNOTE = 0x927C
 _TAG_MAKE = 0x010F
 
-# TIFF の型ごとの 1 個の大きさ（バイト）
-_TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
 _TYPE_FORMATS = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d", 13: "I"}
 
 
@@ -80,21 +84,21 @@ def _decode(reader: _TiffReader, note: bytes, offset: int, make: str) -> MakerNo
     candidates: list[tuple[str, int, list[str], list[int], dict[int, str]]] = []
     tiff_order = reader.order
     if note.startswith(b"PENTAX \0"):
-        order = _order_of(note[8:10]) or tiff_order
+        order = order_of(note[8:10]) or tiff_order
         candidates.append(("Pentax", 10, [order], [offset], PENTAX_TAGS))
     elif note.startswith(b"AOC\0"):
-        orders = _orders(_order_of(note[4:6]) or tiff_order)
+        orders = _orders(order_of(note[4:6]) or tiff_order)
         candidates.append(("Pentax", 6, orders, [offset, 0], PENTAX_TAGS))
     elif note.startswith(b"S1\0\0\0\0\0\0\x0c\0\0\0"):
         candidates.append(("Pentax", 12, _orders(tiff_order), [offset], PENTAX_TAGS))
     elif note.startswith((b"RICOH\0II", b"RICOH\0MM")):
-        order = _order_of(note[6:8]) or tiff_order
+        order = order_of(note[6:8]) or tiff_order
         candidates.append(("Ricoh（Pentax 形式）", 8, [order], [offset], PENTAX_TAGS))
     elif upper_make.startswith(("RICOH", "PENTAX RICOH")):
         header = note[:8]
         if _is_tiff_header_at_8(header):
             # WG-M1 などの、TIFF と同じヘッダーの形式（位置は MakerNote の先頭が基準）
-            order = _order_of(header[:2]) or tiff_order
+            order = order_of(header[:2]) or tiff_order
             candidates.append(("Ricoh", 8, [order], [offset], RICOH_TAGS))
         else:
             candidates.append(("Ricoh", 8, _orders(tiff_order), [0, offset], RICOH_TAGS))
@@ -123,7 +127,7 @@ def _read_best(
     """バイト順と位置の基準の組み合わせを試し、値の位置がいちばん多く収まる読み方で返す。"""
     best: tuple[int, tuple[MakerNoteTag, ...]] = (0, ())
     for order in orders:
-        entries = _read_ifd(data, ifd_offset, order)
+        entries = read_ifd(data, ifd_offset, order)
         if not entries:
             continue
         for base in bases:
@@ -136,27 +140,19 @@ def _read_best(
 # --- TIFF の読み取り ----------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _Entry:
-    tag: int
-    type: int
-    count: int
-    raw: bytes  # 値そのもの（4 バイト以下）か、値の位置（4 バイト）
-
-
 class _TiffReader:
     """EXIF の TIFF ブロックから、MakerNote の位置とメーカー名を探す。"""
 
     def __init__(self, data: bytes) -> None:
-        order = _order_of(data[:2])
+        order = order_of(data[:2])
         if order is None or struct.unpack(order + "H", data[2:4])[0] != 42:
             raise ValueError("TIFF のヘッダーではありません")
         self.data = data
         self.order = order
         self.ifd0 = struct.unpack(order + "I", data[4:8])[0]
 
-    def _find(self, ifd_offset: int, tag: int) -> _Entry | None:
-        for entry in _read_ifd(self.data, ifd_offset, self.order) or ():
+    def _find(self, ifd_offset: int, tag: int) -> IfdEntry | None:
+        for entry in read_ifd(self.data, ifd_offset, self.order) or ():
             if entry.tag == tag:
                 return entry
         return None
@@ -165,63 +161,31 @@ class _TiffReader:
         entry = self._find(self.ifd0, _TAG_MAKE)
         if entry is None or entry.type != 2:
             return ""
-        value = _value_bytes(self.data, entry, self.order, 0)
+        value = value_bytes(self.data, entry, self.order, 0)
         return "" if value is None else _ascii(value)
 
     def maker_note(self) -> tuple[int, int] | None:
         """MakerNote の位置と大きさ（TIFF の先頭から）を返す。なければ None。"""
-        exif = self._find(self.ifd0, _TAG_EXIF_IFD)
+        exif = self._find(self.ifd0, TAG_EXIF_IFD)
         if exif is None:
             return None
-        exif_offset = struct.unpack(self.order + "I", exif.raw[:4])[0]
-        note = self._find(exif_offset, _TAG_MAKERNOTE)
+        note = self._find(pointer(exif, self.order), TAG_MAKERNOTE)
         if note is None or note.count <= 4:
             return None
-        offset = struct.unpack(self.order + "I", note.raw[:4])[0]
+        offset = pointer(note, self.order)
         if offset + note.count > len(self.data):
             return None
         return offset, note.count
 
 
-def _read_ifd(data: bytes, offset: int, order: str) -> list[_Entry] | None:
-    """offset の IFD の項目を返す。IFD として正しくなさそうなら None。"""
-    if offset < 0 or offset + 2 > len(data):
-        return None
-    count = struct.unpack(order + "H", data[offset : offset + 2])[0]
-    end = offset + 2 + 12 * count
-    if not 0 < count <= MAX_IFD_ENTRIES or end > len(data):
-        return None
-    entries = []
-    for i in range(count):
-        start = offset + 2 + 12 * i
-        tag, type_, value_count = struct.unpack(order + "HHI", data[start : start + 8])
-        if type_ not in _TYPE_SIZES:
-            if i == 0:
-                return None  # 最初の項目から型が変なら IFD ではない
-            continue
-        entries.append(_Entry(tag, type_, value_count, data[start + 8 : start + 12]))
-    return entries or None
-
-
-def _value_bytes(data: bytes, entry: _Entry, order: str, base: int) -> bytes | None:
-    """項目の値のバイト列を返す。値の位置がデータの外なら None。"""
-    size = _TYPE_SIZES[entry.type] * entry.count
-    if size <= 4:
-        return entry.raw[:size]
-    position = base + struct.unpack(order + "I", entry.raw)[0]
-    if position < 0 or position + size > len(data):
-        return None
-    return data[position : position + size]
-
-
 def _decode_entries(
-    data: bytes, entries: list[_Entry], order: str, base: int, table: dict[int, str]
+    data: bytes, entries: list[IfdEntry], order: str, base: int, table: dict[int, str]
 ) -> tuple[tuple[MakerNoteTag, ...], int]:
     """項目を名前と値の文字列にする。値の位置がデータの中に収まった数も返す。"""
     tags = []
     valid = 0
     for entry in entries:
-        value = _value_bytes(data, entry, order, base)
+        value = value_bytes(data, entry, order, base)
         if value is None:
             continue
         valid += 1
@@ -248,7 +212,7 @@ def format_value(type_: int, value: bytes, order: str = "<") -> str:
         pairs = [struct.unpack(code, value[i : i + 8]) for i in range(0, len(value), 8)]
         return _join([f"{n}/{d}" for n, d in pairs])
     code = _TYPE_FORMATS[type_]
-    size = _TYPE_SIZES[type_]
+    size = TYPE_SIZES[type_]
     count = len(value) // size
     numbers = struct.unpack(f"{order}{count}{code}", value[: count * size])
     texts = [f"{n:g}" if isinstance(n, float) else str(n) for n in numbers]
@@ -273,11 +237,6 @@ def _hex(value: bytes) -> str:
 
 def _ascii(value: bytes) -> str:
     return value.split(b"\0", 1)[0].decode("utf-8", errors="replace").strip()
-
-
-def _order_of(mark: bytes) -> str | None:
-    """バイト順の目印 (II / MM) を struct の書式に。目印でなければ None。"""
-    return {b"II": "<", b"MM": ">"}.get(mark)
 
 
 def _orders(first: str) -> list[str]:

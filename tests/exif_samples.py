@@ -14,6 +14,7 @@ from typing import Any
 ASCII, SHORT, LONG, RATIONAL, UNDEFINED = 2, 3, 4, 5, 7
 EXIF_IFD_AT = 1000
 GPS_IFD_AT = 2000
+THUMBNAIL_IFD_AT = 2500
 MAKERNOTE_AT = 3000
 
 
@@ -46,8 +47,11 @@ def _encode(value: Any, order: str) -> tuple[int, int, bytes]:
     raise ValueError(kind)
 
 
-def write_ifd(entries: Sequence[Entry], start: int, order: str = "<") -> bytes:
-    """位置の基準から start の場所に置く IFD を作る（4 バイトを超える値は IFD のすぐ後ろ）。"""
+def write_ifd(entries: Sequence[Entry], start: int, order: str = "<", next_ifd: int = 0) -> bytes:
+    """位置の基準から start の場所に置く IFD を作る（4 バイトを超える値は IFD のすぐ後ろ）。
+
+    next_ifd は次の IFD の位置（IFD0 の次はサムネイルの IFD1）。
+    """
     entries = sorted(entries, key=lambda e: e[0])
     data_at = start + 2 + 12 * len(entries) + 4
     head = struct.pack(order + "H", len(entries))
@@ -64,7 +68,7 @@ def write_ifd(entries: Sequence[Entry], start: int, order: str = "<") -> bytes:
             field = struct.pack(order + "I", data_at + len(data))
             data += raw + (b"\0" if len(raw) % 2 else b"")
         head += struct.pack(order + "HHI", tag, type_, count) + field
-    return head + struct.pack(order + "I", 0) + data
+    return head + struct.pack(order + "I", next_ifd) + data
 
 
 def build_exif(
@@ -75,13 +79,17 @@ def build_exif(
     maker_note: bytes | Callable[[int], bytes] | None = None,
     order: str = "<",
     prefix: bool = True,
+    ifd0_extra: Sequence[Entry] = (),
+    thumbnail: bool = False,
 ) -> bytes:
     """EXIF を組み立てる。maker_note に関数を渡すと、置く位置（TIFF の先頭から）を渡して呼ぶ。
 
     prefix が True なら先頭に "Exif\\0\\0" を付ける（JPEG の APP1 と同じ形）。
+    thumbnail が True ならサムネイルの IFD1（JPEG の位置と長さ）を付ける。
     """
     mark = b"II" if order == "<" else b"MM"
     ifd0: list[Entry] = [(0x010F, make), (0x0110, model), (0x8769, ("long", [EXIF_IFD_AT]))]
+    ifd0 += list(ifd0_extra)
     if gps is not None:
         ifd0.append((0x8825, ("long", [GPS_IFD_AT])))
     exif_entries = list(exif)
@@ -91,10 +99,15 @@ def build_exif(
         exif_entries.append((0x927C, Pointer(UNDEFINED, len(note), MAKERNOTE_AT)))
     data = bytearray(MAKERNOTE_AT + len(note))
     data[:8] = mark + struct.pack(order + "HI", 42, 8)
+    next_ifd = THUMBNAIL_IFD_AT if thumbnail else 0
     parts = [
-        (8, write_ifd(ifd0, 8, order)),
+        (8, write_ifd(ifd0, 8, order, next_ifd)),
         (EXIF_IFD_AT, write_ifd(exif_entries, EXIF_IFD_AT, order)),
     ]
+    if thumbnail:
+        ifd1 = [(0x0201, ("long", [THUMBNAIL_IFD_AT + 100])), (0x0202, ("long", [4]))]
+        parts.append((THUMBNAIL_IFD_AT, write_ifd(ifd1, THUMBNAIL_IFD_AT, order)))
+        parts.append((THUMBNAIL_IFD_AT + 100, b"\xff\xd8\xff\xd9"))
     if gps is not None:
         parts.append((GPS_IFD_AT, write_ifd(gps, GPS_IFD_AT, order)))
     for at, part in parts:
