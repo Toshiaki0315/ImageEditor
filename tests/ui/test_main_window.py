@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QTimer, QUrl
+from PyQt6.QtGui import QKeyEvent, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -15,7 +15,9 @@ from PyQt6.QtWidgets import (
     QSplitter,
 )
 
+import image_editor.core.io as io_module
 import image_editor.ui.main_window as main_window_module
+import image_editor.ui.window_batch as window_batch_module
 from image_editor.app import create_window
 from image_editor.core.diorama import DioramaDirection
 from image_editor.core.filters import FilterType
@@ -27,6 +29,7 @@ from image_editor.core.text import TextPosition, TextSettings
 from image_editor.core.transform import AspectRatio, CropRect
 from image_editor.ui.crop_overlay import image_to_widget
 from image_editor.ui.main_window import MainWindow, default_save_path, is_same_file
+from image_editor.ui.qt_image import pil_to_qimage
 
 
 def test_window_opens(qtbot):
@@ -1477,8 +1480,9 @@ def test_edit_menu_actions(qtbot):
 
     edit_menu = [a.menu() for a in window.menuBar().actions() if a.menu()][1]
     texts = [a.text() for a in edit_menu.actions() if not a.isSeparator()]
-    assert texts == ["元に戻す", "やり直す", "文字・透かし…"]
+    assert texts == ["元に戻す", "やり直す", "貼り付け", "文字・透かし…"]
     assert window.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
+    assert window.paste_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
     assert window.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
     assert not window.undo_action.isEnabled()
     assert not window.redo_action.isEnabled()
@@ -2749,3 +2753,134 @@ def test_remembered_exif_tab_is_not_opened_without_image(qtbot, preferences):
     widget = MainWindow()
     qtbot.addWidget(widget)
     assert widget.settings_panel.current_tab() == 0
+
+
+# --- クリップボードからの貼り付け ---------------------------------------------------------
+
+
+def set_clipboard_image(image: Image.Image) -> None:
+    QApplication.clipboard().setImage(pil_to_qimage(image))
+
+
+def set_clipboard_files(paths) -> None:
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+    QApplication.clipboard().setMimeData(mime)
+
+
+@pytest.fixture
+def pictures(tmp_path, monkeypatch):
+    folder = tmp_path / "Pictures"
+    folder.mkdir()
+    monkeypatch.setattr(io_module, "PICTURES_DIR", folder)
+    return folder
+
+
+def test_paste_image_data(window):
+    image = Image.new("RGBA", (30, 20), (10, 200, 30, 128))
+    set_clipboard_image(image)
+
+    window.paste_action.trigger()
+
+    loaded = window.loaded
+    assert loaded is not None and loaded.path is None
+    assert loaded.image.size == (30, 20)
+    assert loaded.image.getpixel((0, 0)) == (10, 200, 30, 128)
+    assert window.windowTitle() == "クリップボードの画像 — Image Editor"
+    assert window.status_label.text().startswith("クリップボードの画像 ｜ 原寸 30×20 px")
+    assert not window.settings_panel.is_exif_enabled()
+
+
+def test_paste_finder_file_opens_the_file(window, tmp_path):
+    path = tmp_path / "copied.png"
+    Image.new("RGB", (12, 8)).save(path)
+    other = tmp_path / "second.png"
+    Image.new("RGB", (5, 5)).save(other)
+    set_clipboard_files([path, other])
+
+    window.paste()
+
+    assert window.loaded is not None and window.loaded.path == path
+    assert "2 件中、先頭の 1 枚のみ読み込みました" in window.status_label.text()
+
+
+def test_paste_unsupported_file_shows_error(window, tmp_path, warnings):
+    path = tmp_path / "note.txt"
+    path.write_text("hello")
+    set_clipboard_files([path])
+
+    window.paste()
+
+    assert window.loaded is None
+    assert warnings and warnings[0][0] == "画像を読み込めません"
+
+
+def test_paste_nothing(window):
+    QApplication.clipboard().setText("ただの文字")
+    window.paste()
+    assert window.loaded is None
+    assert window.status_label.text() == "クリップボードに画像がありません"
+
+
+def test_paste_asks_before_discarding_changes(loaded_window, questions):
+    loaded_window.settings_panel.saturation_slider.setValue(50)
+    questions["answer"] = QMessageBox.StandardButton.Cancel
+    set_clipboard_image(Image.new("RGB", (9, 9)))
+
+    loaded_window.paste()
+
+    assert questions["asked"] == 1
+    assert loaded_window.loaded.path is not None  # キャンセルしたので元の画像のまま
+
+
+def test_save_pasted_image(window, qtbot, pictures, monkeypatch):
+    set_clipboard_image(Image.new("RGB", (16, 12), (200, 0, 0)))
+    window.paste()
+
+    default = window._default_save_path()
+    assert default.parent == pictures
+    assert default.name.startswith("クリップボード_") and default.suffix == ".png"
+
+    chosen = pictures / "pasted.png"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(chosen), "PNG (*.png)")
+    )
+    with qtbot.waitSignal(window.save_finished, timeout=10000):
+        window.save_file_dialog()
+    with Image.open(chosen) as saved:
+        assert saved.size == (16, 12)
+
+
+def test_batch_dialog_has_no_source_for_pasted_image(window, monkeypatch):
+    seen = {}
+
+    class FakeDialog:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(window_batch_module, "BatchDialog", FakeDialog)
+    set_clipboard_image(Image.new("RGB", (8, 8)))
+    window.paste()
+
+    window.batch_dialog()
+
+    assert seen["sources"] == []
+
+
+def test_cmd_v_in_number_field_opens_image(loaded_window, monkeypatch):
+    # 数値欄にフォーカスがあっても、クリップボードが画像（文字なし）なら画像を開く
+    monkeypatch.setattr(loaded_window, "isActiveWindow", lambda: True)
+    spin = loaded_window.settings_panel.width_spin
+    override = QKeyEvent(
+        QEvent.Type.ShortcutOverride, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+    )
+    assert override.matches(QKeySequence.StandardKey.Paste)
+
+    set_clipboard_image(Image.new("RGB", (8, 8)))
+    assert loaded_window.eventFilter(spin, override)  # 入力欄に渡さない
+
+    QApplication.clipboard().setText("123")
+    assert not loaded_window.eventFilter(spin, override)  # 文字なら入力欄に貼り付ける

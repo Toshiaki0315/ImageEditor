@@ -22,6 +22,24 @@ def pil_to_qimage(image: Image.Image) -> QImage:
     return QImage(data, width, height, width * channels, image_format).copy()
 
 
+def qimage_to_pil(qimage: QImage) -> Image.Image:
+    """QImage を PIL 画像（透過ありなら RGBA、なければ RGB）に変換する。
+
+    返す画像は画素データを自前で持つので、元の QImage を解放しても壊れない。
+    """
+    if qimage.hasAlphaChannel():
+        converted, mode = qimage.convertToFormat(QImage.Format.Format_RGBA8888), "RGBA"
+    else:
+        converted, mode = qimage.convertToFormat(QImage.Format.Format_RGB888), "RGB"
+    width, height = converted.width(), converted.height()
+    stride = converted.bytesPerLine()
+    bits = converted.constBits()
+    if bits is None or width == 0 or height == 0:
+        raise ValueError("画像が空です")
+    data = bits.asstring(stride * height)
+    return Image.frombuffer(mode, (width, height), data, "raw", mode, stride, 1).copy()
+
+
 def pil_to_qpixmap(image: Image.Image) -> QPixmap:
     """PIL 画像を QPixmap に変換する。"""
     return QPixmap.fromImage(pil_to_qimage(image))

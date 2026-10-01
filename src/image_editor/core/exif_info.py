@@ -154,7 +154,7 @@ def read_exif_info(raw_exif: bytes | None = None, tiff_path: Path | None = None)
 
 def exif_info_of(loaded: LoadedImage) -> ExifInfo:
     """読み込んだ画像の元ファイルの EXIF を読む（TIFF はファイルから読む）。"""
-    tiff_path = loaded.path if loaded.format == "TIFF" else None
+    tiff_path = loaded.path if loaded.format == "TIFF" and loaded.path is not None else None
     return read_exif_info(loaded.raw_exif, tiff_path)
 
 
