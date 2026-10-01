@@ -1,10 +1,8 @@
 """設定パネル（サイズ変更・加工・トリミング・各ボタン）。"""
 
-from dataclasses import dataclass
 from typing import Literal
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,8 +12,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QSlider,
-    QSpinBox,
     QStyle,
     QTabBar,
     QTabWidget,
@@ -46,15 +42,15 @@ from image_editor.core.effects import (
     VIGNETTE_MIN,
 )
 from image_editor.core.filters import FilterType
-from image_editor.core.frames import FrameType, window_aspect
+from image_editor.core.frames import FrameType
 from image_editor.core.io import (
     DEFAULT_JPEG_QUALITY,
     JPEG_QUALITY_MAX,
     JPEG_QUALITY_MIN,
     SaveOptions,
 )
-from image_editor.core.pipeline import EditSettings, effective_crop
-from image_editor.core.presets import Preset, apply_preset
+from image_editor.core.pipeline import EditSettings
+from image_editor.core.presets import Preset
 from image_editor.core.shapes import (
     CORNER_RADIUS_DEFAULT,
     CORNER_RADIUS_MAX,
@@ -69,45 +65,36 @@ from image_editor.core.transform import (
     CropRect,
     Orientation,
     OrientOp,
-    clamp_crop,
-    constrain_rect,
-    fit_aspect,
     fit_size,
-    transform_rect,
 )
-
-# 未読込時に数値欄へ表示する文字（空文字だと QSpinBox の特殊表示が無効になるため空白）
-BLANK_TEXT = " "
-TRIM_TEXT = "トリミング実行"
-EDIT_RANGE_TEXT = "範囲を編集"
-# フレーム・円を選んでいるとき、比のプルダウンに表示する項目（ユーザーは選べない）
-FOLLOW_FRAME_TEXT = "フレーム・円に合わせる"
-FOLLOW_FRAME_DATA = "follow_frame"
-# 「加工」のスライダーの最小の長さ（細かく調整しやすいよう長めにする）
-SLIDER_MIN_WIDTH = 225
-# タブの名前
-TAB_ADJUST_TEXT = "加工"
-TAB_CROP_TEXT = "切り抜き"
-TAB_OUTPUT_TEXT = "出力"
-# パネルのグループ間の間隔と上下の余白（px）
-PANEL_SPACING = 4
-PANEL_MARGIN = 6
-
-
-@dataclass(frozen=True)
-class PanelState:
-    """アンドゥ／リドゥで戻す、設定パネルの状態。
-
-    保存に使う設定 (EditSettings) に加えて、範囲の指定を助ける比の選択も持つ
-    （戻したトリミング範囲と比の固定が食い違わないように）。
-    """
-
-    settings: EditSettings
-    aspect: AspectRatio = AspectRatio.FREE
-    portrait: bool = False
+from image_editor.ui.panel_crop import CropMixin
+from image_editor.ui.panel_parts import (  # noqa: F401 - PanelState は外からも使う
+    BLANK_TEXT,
+    EDIT_RANGE_TEXT,
+    FOLLOW_FRAME_DATA,
+    FOLLOW_FRAME_TEXT,
+    PANEL_MARGIN,
+    PANEL_SPACING,
+    SLIDER_MIN_WIDTH,
+    TAB_ADJUST_TEXT,
+    TAB_CROP_TEXT,
+    TAB_OUTPUT_TEXT,
+    TRIM_TEXT,
+    PanelState,
+    ResettableSlider,
+    Updating,
+    amount_slider,
+    ev_text,
+    kelvin_text,
+    percent_text,
+    signed_text,
+    spin_box,
+    tab_page,
+)
+from image_editor.ui.panel_state import StateMixin
 
 
-class SettingsPanel(QWidget):
+class SettingsPanel(CropMixin, StateMixin, QWidget):
     """編集設定を入力するパネル。入力が変わるたびに settings_changed を発行する。
 
     幅・高さの初期値はトリミング後のサイズ（フレームがあれば写真部分の比率に切り抜いた後の
@@ -138,8 +125,8 @@ class SettingsPanel(QWidget):
         self._committed_crop: CropRect | None = None
 
         # サイズ変更
-        self.width_spin = _spin_box(MIN_SIZE, MAX_SIZE, " px")
-        self.height_spin = _spin_box(MIN_SIZE, MAX_SIZE, " px")
+        self.width_spin = spin_box(MIN_SIZE, MAX_SIZE, " px")
+        self.height_spin = spin_box(MIN_SIZE, MAX_SIZE, " px")
         self.keep_aspect_check = QCheckBox("縦横比を保持")
         self.keep_aspect_check.setChecked(True)
         size_box = QGroupBox("サイズ変更")
@@ -153,35 +140,35 @@ class SettingsPanel(QWidget):
         for filter_type in FilterType:
             self.filter_combo.addItem(filter_type.label, filter_type)
         # スライダーはダブルクリックで既定値に戻る
-        self.vignette_slider, self.vignette_value_label, vignette_row = _amount_slider(
+        self.vignette_slider, self.vignette_value_label, vignette_row = amount_slider(
             VIGNETTE_MIN, VIGNETTE_MAX
         )
-        self.aging_slider, self.aging_value_label, aging_row = _amount_slider(AGING_MIN, AGING_MAX)
+        self.aging_slider, self.aging_value_label, aging_row = amount_slider(AGING_MIN, AGING_MAX)
         # 色温度は 100K 刻み。スライダーの値は「ケルビン ÷ 100」で持つ
-        self.temperature_slider, self.temperature_value_label, temperature_row = _amount_slider(
+        self.temperature_slider, self.temperature_value_label, temperature_row = amount_slider(
             TEMPERATURE_MIN // TEMPERATURE_STEP,
             TEMPERATURE_MAX // TEMPERATURE_STEP,
             default=TEMPERATURE_NEUTRAL // TEMPERATURE_STEP,
         )
         self.temperature_slider.setPageStep(5)
-        self.temperature_value_label.setText(_kelvin_text(TEMPERATURE_NEUTRAL))
-        self.saturation_slider, self.saturation_value_label, saturation_row = _amount_slider(
+        self.temperature_value_label.setText(kelvin_text(TEMPERATURE_NEUTRAL))
+        self.saturation_slider, self.saturation_value_label, saturation_row = amount_slider(
             SATURATION_MIN, SATURATION_MAX
         )
-        self.saturation_value_label.setText(_signed_text(0))
-        self.brightness_slider, self.brightness_value_label, brightness_row = _amount_slider(
+        self.saturation_value_label.setText(signed_text(0))
+        self.brightness_slider, self.brightness_value_label, brightness_row = amount_slider(
             BRIGHTNESS_MIN, BRIGHTNESS_MAX
         )
-        self.brightness_value_label.setText(_signed_text(0))
+        self.brightness_value_label.setText(signed_text(0))
         # 露出は 0.1 EV 刻み。スライダーの値は「EV × 10」で持つ
-        self.exposure_slider, self.exposure_value_label, exposure_row = _amount_slider(
+        self.exposure_slider, self.exposure_value_label, exposure_row = amount_slider(
             round(EXPOSURE_MIN / EXPOSURE_STEP), round(EXPOSURE_MAX / EXPOSURE_STEP)
         )
-        self.exposure_value_label.setText(_ev_text(0.0))
-        self.contrast_slider, self.contrast_value_label, contrast_row = _amount_slider(
+        self.exposure_value_label.setText(ev_text(0.0))
+        self.contrast_slider, self.contrast_value_label, contrast_row = amount_slider(
             CONTRAST_MIN, CONTRAST_MAX
         )
-        self.contrast_value_label.setText(_signed_text(0))
+        self.contrast_value_label.setText(signed_text(0))
         self.frame_combo = QComboBox()
         for frame_type in FrameType:
             self.frame_combo.addItem(frame_type.label, frame_type)
@@ -189,11 +176,11 @@ class SettingsPanel(QWidget):
         for shape_type in ShapeType:
             self.shape_combo.addItem(shape_type.label, shape_type)
         # 角丸の半径（短辺に対する %）。形が角丸のときだけ操作できる
-        self.corner_slider, self.corner_value_label, corner_row = _amount_slider(
+        self.corner_slider, self.corner_value_label, corner_row = amount_slider(
             CORNER_RADIUS_MIN, CORNER_RADIUS_MAX, default=CORNER_RADIUS_DEFAULT
         )
         self.corner_slider.setPageStep(5)
-        self.corner_value_label.setText(_percent_text(CORNER_RADIUS_DEFAULT))
+        self.corner_value_label.setText(percent_text(CORNER_RADIUS_DEFAULT))
         # プリセット・文字はテイストと同じ行に置く
         self.preset_menu = QMenu(self)
         self.preset_button = QToolButton()
@@ -223,11 +210,11 @@ class SettingsPanel(QWidget):
         filter_form.addRow("経年劣化", aging_row)
 
         # ディテール（シャープ・ぼかし・ノイズ除去）
-        self.sharpen_slider, self.sharpen_value_label, sharpen_row = _amount_slider(
+        self.sharpen_slider, self.sharpen_value_label, sharpen_row = amount_slider(
             DETAIL_MIN, DETAIL_MAX
         )
-        self.blur_slider, self.blur_value_label, blur_row = _amount_slider(DETAIL_MIN, DETAIL_MAX)
-        self.denoise_slider, self.denoise_value_label, denoise_row = _amount_slider(
+        self.blur_slider, self.blur_value_label, blur_row = amount_slider(DETAIL_MIN, DETAIL_MAX)
+        self.denoise_slider, self.denoise_value_label, denoise_row = amount_slider(
             DETAIL_MIN, DETAIL_MAX
         )
         detail_box = QGroupBox("ディテール")
@@ -256,10 +243,10 @@ class SettingsPanel(QWidget):
             orient_row.addWidget(button)
 
         # トリミング
-        self.crop_x_spin = _spin_box(0, MAX_SIZE, " px")
-        self.crop_y_spin = _spin_box(0, MAX_SIZE, " px")
-        self.crop_width_spin = _spin_box(0, MAX_SIZE, " px")
-        self.crop_height_spin = _spin_box(0, MAX_SIZE, " px")
+        self.crop_x_spin = spin_box(0, MAX_SIZE, " px")
+        self.crop_y_spin = spin_box(0, MAX_SIZE, " px")
+        self.crop_width_spin = spin_box(0, MAX_SIZE, " px")
+        self.crop_height_spin = spin_box(0, MAX_SIZE, " px")
         self.clear_crop_button = QPushButton("範囲をクリア")
         # 押すと切り抜き後の表示に切り替わり、「範囲を編集」になる（範囲は設定として保持）
         self.trim_button = QPushButton(TRIM_TEXT)
@@ -289,7 +276,7 @@ class SettingsPanel(QWidget):
         crop_form.addRow(crop_buttons)
 
         # 保存の設定（画像ごとには戻さない。アプリを終了しても残すのはメインウィンドウ側）
-        self.quality_slider, self.quality_value_label, quality_row = _amount_slider(
+        self.quality_slider, self.quality_value_label, quality_row = amount_slider(
             JPEG_QUALITY_MIN, JPEG_QUALITY_MAX, default=DEFAULT_JPEG_QUALITY
         )
         self.quality_value_label.setText(str(DEFAULT_JPEG_QUALITY))
@@ -317,10 +304,10 @@ class SettingsPanel(QWidget):
         # タブ: 加工／切り抜き／出力
         self.tabs = QTabWidget()
         self.tabs.addTab(
-            _page(filter_box, detail_box, self.reset_adjustments_button), TAB_ADJUST_TEXT
+            tab_page(filter_box, detail_box, self.reset_adjustments_button), TAB_ADJUST_TEXT
         )
-        self.tabs.addTab(_page(frame_box, orient_box, crop_box), TAB_CROP_TEXT)
-        self.tabs.addTab(_page(size_box, save_box), TAB_OUTPUT_TEXT)
+        self.tabs.addTab(tab_page(frame_box, orient_box, crop_box), TAB_CROP_TEXT)
+        self.tabs.addTab(tab_page(size_box, save_box), TAB_OUTPUT_TEXT)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(PANEL_SPACING)
@@ -474,237 +461,6 @@ class SettingsPanel(QWidget):
         """選ばれている形を返す。"""
         return self.shape_combo.currentData()
 
-    def crop_aspect(self) -> tuple[tuple[float, float] | None, bool]:
-        """トリミング範囲に保たせる縦横比 (幅, 高さ) と、向きを自由にするかを返す。
-
-        フレームがあれば写真部分の比（チェキは範囲の形に合わせて縦横どちらにもなる）、
-        フレームなしの円は 1:1、それ以外は比のプルダウンの選択（自由なら None）。
-        """
-        size = self._range_size()
-        aspect = self._aspect_for(size)
-        free = self.frame() is not FrameType.NONE and aspect is not None and aspect[0] != aspect[1]
-        return aspect, free
-
-    def is_aspect_locked_by_frame(self) -> bool:
-        """フレーム・円に合わせて比を固定しているかを返す。"""
-        return self.frame() is not FrameType.NONE or self.shape() is ShapeType.CIRCLE
-
-    def set_crop(self, rect: CropRect | None) -> None:
-        """トリミング範囲を設定する（原画像の座標系）。None で解除。
-
-        比を指定しているときは、範囲をその比に直してから設定する。
-        """
-        if rect is not None and self._image_size is not None:
-            aspect = self._aspect_for((rect.width, rect.height))
-            if aspect is not None and rect.width > 0 and rect.height > 0:
-                rect = constrain_rect(rect, aspect, self._image_size)
-        rect = rect or CropRect(0, 0, 0, 0)
-        with self._block():
-            self.crop_x_spin.setValue(rect.x)
-            self.crop_y_spin.setValue(rect.y)
-            self.crop_width_spin.setValue(rect.width)
-            self.crop_height_spin.setValue(rect.height)
-        self._on_crop_edited()
-
-    def clear_crop(self) -> None:
-        """トリミングを解除する。"""
-        self.set_crop(None)
-
-    def aspect_preset(self) -> AspectRatio:
-        """比のプルダウンで選んでいる比（フレーム・円で固定中なら、固定を解いたときに戻る比）。"""
-        data = self.aspect_combo.currentData()
-        if isinstance(data, AspectRatio):
-            return data
-        return self.aspect_combo.itemData(self._aspect_index)
-
-    def snapshot(self) -> PanelState:
-        """アンドゥ／リドゥ用に今の状態を返す。"""
-        return PanelState(
-            settings=self.settings(),
-            aspect=self.aspect_preset(),
-            portrait=self.portrait_check.isChecked(),
-        )
-
-    def restore(self, state: PanelState) -> None:
-        """snapshot() で取った状態に戻す（画像は変えない）。変更は 1 回だけ通知する。
-
-        比の固定で範囲を直したりせず、取ったときの値をそのまま戻す。
-        """
-        if self._image_size is None:
-            return
-        settings = state.settings
-        # 回転・反転前の大きさ（向きによる幅と高さの入れ替えは、もう一度かけると元に戻る）
-        source_size = self._orientation.size(self._image_size)
-        self._orientation = settings.orientation
-        self._image_size = settings.orientation.size(source_size)
-        crop = settings.crop or CropRect(0, 0, 0, 0)
-        with self._block():
-            self._set_crop_limits(self._image_size)
-            self._set_crop_spins(crop)
-            self._committed_crop = self._clamped_range()
-            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
-            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
-            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
-            self.corner_slider.setValue(settings.corner_radius)
-            self._text = settings.text
-            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
-            self.brightness_slider.setValue(settings.brightness)
-            self.contrast_slider.setValue(settings.contrast)
-            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
-            self.saturation_slider.setValue(settings.saturation)
-            self.vignette_slider.setValue(settings.vignette)
-            self.aging_slider.setValue(settings.aging)
-            self.sharpen_slider.setValue(settings.sharpen)
-            self.blur_slider.setValue(settings.blur)
-            self.denoise_slider.setValue(settings.denoise)
-            self._aspect_index = self.aspect_combo.findData(state.aspect)
-            self.aspect_combo.setCurrentIndex(self._aspect_index)
-            self.portrait_check.setChecked(state.portrait)
-            self.keep_aspect_check.setChecked(settings.keep_aspect)
-            # 幅・高さは、指定がなければトリミング後のサイズ、あれば指定から計算した値
-            base = self.base_size()
-            if settings.width is None and settings.height is None:
-                self._size_edited = False
-                self._last_edited = "width"
-                self._set_size_spins(base)
-            else:
-                self._size_edited = True
-                self._last_edited = "width" if settings.width is not None else "height"
-                self._set_size_spins(
-                    fit_size(base, settings.width, settings.height, settings.keep_aspect)
-                )
-        self._update_corner_enabled()
-        self._update_aspect_controls()
-        self._emit_changed()
-
-    def is_adjusting(self) -> bool:
-        """スライダーをドラッグ中かを返す（ドラッグ中の変更は 1 回の操作としてまとめる）。"""
-        sliders = (self.corner_slider, *self._adjustment_sliders())
-        return any(slider.isSliderDown() for slider in sliders)
-
-    def is_trim_view(self) -> bool:
-        """切り抜き後の表示（「トリミング実行」が押された状態）かを返す。"""
-        return self.trim_button.isChecked()
-
-    def set_trim_view(self, enabled: bool) -> None:
-        """切り抜き後の表示を切り替える（変化すれば trim_view_toggled を発行）。"""
-        if enabled and not self.trim_button.isEnabled():
-            return
-        self.trim_button.setChecked(enabled)
-
-    def orientation(self) -> Orientation:
-        """今の向き（回転・反転）を返す。"""
-        return self._orientation
-
-    def image_size(self) -> tuple[int, int] | None:
-        """回転・反転した後の画像の大きさ（トリミング範囲の座標系）を返す。"""
-        return self._image_size
-
-    def apply_orientation(self, op: OrientOp) -> None:
-        """表示中の向きに対して回転・反転する。
-
-        同じ写真の部分を指すよう、トリミング範囲も一緒に回す。90° 回すときは、手で変えた
-        幅・高さと、比の「縦向き」も入れ替える。変更は 1 回だけ通知する。
-        """
-        if self._image_size is None:
-            return
-        old_size = self._image_size
-        rect = self._clamped_range()
-        self._orientation = self._orientation.apply(op)
-        # 今の向きに対する操作なので、90° 回したときだけ幅と高さが入れ替わる
-        self._image_size = (old_size[1], old_size[0]) if op.swaps_sides else old_size
-        with self._block():
-            self._set_crop_limits(self._image_size)
-            if rect is not None:
-                self._set_crop_spins(transform_rect(rect, old_size, op))
-            if op.swaps_sides:
-                if self._size_edited:
-                    self._set_size_spins((self.height_spin.value(), self.width_spin.value()))
-                    self._last_edited = "height" if self._last_edited == "width" else "width"
-                if self.portrait_check.isEnabled():
-                    self.portrait_check.setChecked(not self.portrait_check.isChecked())
-        self._on_crop_edited()
-
-    def set_presets(self, presets: list[Preset]) -> None:
-        """プリセットの一覧を「プリセット」メニューに反映する。
-
-        メニュー: 一覧（選ぶと当てはめる）／「今の加工を保存…」／「削除」（一覧のサブメニュー）
-        """
-        self._presets = list(presets)
-        menu = self.preset_menu
-        menu.clear()
-        if presets:
-            for preset in presets:
-                action = menu.addAction(preset.name)
-                action.triggered.connect(lambda _=False, p=preset: self.apply_preset(p))
-        else:
-            empty = menu.addAction("（保存したプリセットはありません）")
-            empty.setEnabled(False)
-        menu.addSeparator()
-        save = menu.addAction("今の加工をプリセットとして保存…")
-        save.triggered.connect(self.preset_save_requested)
-        delete_menu = menu.addMenu("削除")
-        delete_menu.setEnabled(bool(presets))
-        for preset in presets:
-            action = delete_menu.addAction(preset.name)
-            action.triggered.connect(
-                lambda _=False, name=preset.name: self.preset_delete_requested.emit(name)
-            )
-
-    def text_settings(self) -> TextSettings:
-        """今の文字・透かしの設定を返す。"""
-        return self._text
-
-    def set_text_settings(self, settings: TextSettings) -> None:
-        """文字・透かしの設定を変える（変われば settings_changed を発行する）。"""
-        if self._image_size is None or settings == self._text:
-            return
-        self._text = settings
-        self._emit_changed()
-
-    def presets(self) -> list[Preset]:
-        """「プリセット」メニューに出している一覧を返す。"""
-        return list(self._presets)
-
-    def apply_preset(self, preset: Preset) -> None:
-        """プリセットの加工（テイスト・色の調整・フレーム・形・角丸）を当てはめる。
-
-        サイズ変更・トリミング・回転はそのまま。フレーム・円の比が変われば、フレームや形を
-        手で選んだときと同じく範囲をその比に直す。変更は 1 回だけ通知する。
-        """
-        if self._image_size is None:
-            return
-        settings = apply_preset(self.settings(), preset)
-        with self._block():
-            self.filter_combo.setCurrentIndex(self.filter_combo.findData(settings.filter))
-            self.frame_combo.setCurrentIndex(self.frame_combo.findData(settings.frame))
-            self.shape_combo.setCurrentIndex(self.shape_combo.findData(settings.shape))
-            self.corner_slider.setValue(settings.corner_radius)
-            self._text = settings.text
-            self.exposure_slider.setValue(round(settings.exposure / EXPOSURE_STEP))
-            self.brightness_slider.setValue(settings.brightness)
-            self.contrast_slider.setValue(settings.contrast)
-            self.temperature_slider.setValue(settings.temperature // TEMPERATURE_STEP)
-            self.saturation_slider.setValue(settings.saturation)
-            self.vignette_slider.setValue(settings.vignette)
-            self.aging_slider.setValue(settings.aging)
-            self.sharpen_slider.setValue(settings.sharpen)
-            self.blur_slider.setValue(settings.blur)
-            self.denoise_slider.setValue(settings.denoise)
-        self._update_corner_enabled()
-        self._on_aspect_source_changed()
-
-    def reset_adjustments(self) -> None:
-        """テイストと色のスライダー（露出〜経年劣化）を既定値に戻す。
-
-        画像・サイズ変更・トリミング・フレーム・形・角丸はそのまま残す。変更は 1 回だけ通知する。
-        """
-        with self._block():
-            self.filter_combo.setCurrentIndex(0)
-            for slider in self._adjustment_sliders():
-                slider.reset()
-        self._emit_changed()
-
     def save_options(self) -> SaveOptions:
         """保存の設定（JPEG 品質・EXIF・位置情報）を返す。"""
         return SaveOptions(
@@ -769,15 +525,15 @@ class SettingsPanel(QWidget):
         return self.temperature_slider.value() * TEMPERATURE_STEP
 
     def _on_temperature_changed(self, _value: int) -> None:
-        self.temperature_value_label.setText(_kelvin_text(self.temperature_kelvin()))
+        self.temperature_value_label.setText(kelvin_text(self.temperature_kelvin()))
         self._emit_changed()
 
     def _on_saturation_changed(self, value: int) -> None:
-        self.saturation_value_label.setText(_signed_text(value))
+        self.saturation_value_label.setText(signed_text(value))
         self._emit_changed()
 
     def _on_brightness_changed(self, value: int) -> None:
-        self.brightness_value_label.setText(_signed_text(value))
+        self.brightness_value_label.setText(signed_text(value))
         self._emit_changed()
 
     def exposure_ev(self) -> float:
@@ -785,118 +541,19 @@ class SettingsPanel(QWidget):
         return self.exposure_slider.value() / round(1 / EXPOSURE_STEP)
 
     def _on_exposure_changed(self, _value: int) -> None:
-        self.exposure_value_label.setText(_ev_text(self.exposure_ev()))
+        self.exposure_value_label.setText(ev_text(self.exposure_ev()))
         self._emit_changed()
 
     def _on_contrast_changed(self, value: int) -> None:
-        self.contrast_value_label.setText(_signed_text(value))
+        self.contrast_value_label.setText(signed_text(value))
         self._emit_changed()
 
     def _on_shape_changed(self) -> None:
         self._update_corner_enabled()
         self._on_aspect_source_changed()
 
-    def _on_aspect_source_changed(self) -> None:
-        """比・縦向き・フレーム・形が変わったら、比の表示を更新し、範囲をその比に直す。"""
-        if self._updating:
-            return
-        self._update_aspect_controls()
-        self._fit_range_to_aspect()
-        self._on_crop_edited()
-
-    def _update_aspect_controls(self) -> None:
-        """フレーム・円を選んでいるときは比をそれに固定して操作できなくする。"""
-        locked = self.is_aspect_locked_by_frame()
-        follow_index = self.aspect_combo.count() - 1
-        with self._block():
-            if locked:
-                if self.aspect_combo.currentIndex() != follow_index:
-                    self._aspect_index = self.aspect_combo.currentIndex()
-                self.aspect_combo.setCurrentIndex(follow_index)
-            elif self.aspect_combo.currentIndex() == follow_index:
-                self.aspect_combo.setCurrentIndex(self._aspect_index)
-        enabled = self._image_size is not None and not locked
-        self.aspect_combo.setEnabled(enabled)
-        preset = self.aspect_combo.currentData()
-        # 自由と 1:1 には向きがない
-        has_orientation = isinstance(preset, AspectRatio) and preset not in (
-            AspectRatio.FREE,
-            AspectRatio.SQUARE,
-        )
-        self.portrait_check.setEnabled(enabled and has_orientation)
-
-    def _aspect_for(self, size: tuple[int, int]) -> tuple[float, float] | None:
-        """size の範囲に保たせる縦横比を返す（自由なら None）。"""
-        frame = self.frame()
-        if frame is not FrameType.NONE:
-            return window_aspect(frame, size)
-        if self.shape() is ShapeType.CIRCLE:
-            return (1, 1)
-        preset = self.aspect_combo.currentData()
-        if not isinstance(preset, AspectRatio):
-            return None
-        return preset.ratio(portrait=self.portrait_check.isChecked())
-
-    def _range_size(self) -> tuple[int, int]:
-        """今の範囲（画像内に収めたもの）の大きさ。範囲がなければ画像の大きさ。"""
-        rect = self._clamped_range()
-        if rect is not None:
-            return (rect.width, rect.height)
-        return self._image_size or (MIN_SIZE, MIN_SIZE)
-
-    def _clamped_range(self) -> CropRect | None:
-        rect = self._crop_rect()
-        if rect is None or self._image_size is None:
-            return None
-        return clamp_crop(rect, self._image_size)
-
-    def _fit_range_to_aspect(self) -> None:
-        """範囲があれば、その中央を今の比に合わせた範囲に直す。"""
-        rect = self._clamped_range()
-        if rect is None:
-            return
-        aspect = self._aspect_for((rect.width, rect.height))
-        if aspect is None:
-            return
-        self._set_crop_spins(fit_aspect(rect, aspect))
-
-    def _on_crop_spin_edited(self, name: str) -> None:
-        """数値欄の変更。比を指定しているときは、もう一方の辺や位置を直して比を保つ。"""
-        if self._updating:
-            return
-        rect = self._crop_rect()
-        size = self._image_size
-        previous = self._committed_crop
-        aspect = self._aspect_for(
-            (previous.width, previous.height) if previous else self._range_size()
-        )
-        width, height = self.crop_width_spin.value(), self.crop_height_spin.value()
-        if aspect is not None and size is not None:
-            x, y = self.crop_x_spin.value(), self.crop_y_spin.value()
-            aspect_width, aspect_height = aspect
-            if name == "width" and width > 0:
-                height = max(MIN_SIZE, round(width * aspect_height / aspect_width))
-            elif name == "height" and height > 0:
-                width = max(MIN_SIZE, round(height * aspect_width / aspect_height))
-            elif rect is not None:
-                # 位置を変えたときは大きさを保ち、画像からはみ出す分だけ戻す
-                x = min(x, max(size[0] - width, 0))
-                y = min(y, max(size[1] - height, 0))
-            if width > 0 and height > 0:
-                fitted = constrain_rect(CropRect(x, y, width, height), aspect, size)
-                if fitted is not None:
-                    self._set_crop_spins(fitted)
-        self._on_crop_edited()
-
-    def _set_crop_spins(self, rect: CropRect) -> None:
-        with self._block():
-            self.crop_x_spin.setValue(rect.x)
-            self.crop_y_spin.setValue(rect.y)
-            self.crop_width_spin.setValue(rect.width)
-            self.crop_height_spin.setValue(rect.height)
-
     def _on_corner_changed(self, value: int) -> None:
-        self.corner_value_label.setText(_percent_text(value))
+        self.corner_value_label.setText(percent_text(value))
         self._emit_changed()
 
     def _update_corner_enabled(self) -> None:
@@ -922,24 +579,6 @@ class SettingsPanel(QWidget):
         """位置情報は、画像があって EXIF を残すときだけ選べる。"""
         enabled = self._image_size is not None and self.keep_exif_check.isChecked()
         self.keep_gps_check.setEnabled(enabled)
-
-    def _on_trim_toggled(self, checked: bool) -> None:
-        self.trim_button.setText(EDIT_RANGE_TEXT if checked else TRIM_TEXT)
-        if not self._updating:
-            self.trim_view_toggled.emit(checked)
-
-    def _update_trim_button(self) -> None:
-        """トリミング範囲・フレーム・形（矩形以外）のどれかがあるときだけ「トリミング実行」を
-        押せるようにする。
-
-        どれもなくなったら全体表示に戻す。
-        """
-        has_crop = self._image_size is not None and (
-            self._effective_crop() is not None or self.shape() is not ShapeType.RECTANGLE
-        )
-        if not has_crop and self.trim_button.isChecked():
-            self.trim_button.setChecked(False)
-        self.trim_button.setEnabled(has_crop)
 
     def _on_crop_edited(self) -> None:
         if self._updating:
@@ -981,34 +620,6 @@ class SettingsPanel(QWidget):
         self.width_spin.setValue(min(size[0], MAX_SIZE))
         self.height_spin.setValue(min(size[1], MAX_SIZE))
 
-    def _crop_rect(self) -> CropRect | None:
-        width, height = self.crop_width_spin.value(), self.crop_height_spin.value()
-        if width <= 0 or height <= 0:
-            return None
-        return CropRect(self.crop_x_spin.value(), self.crop_y_spin.value(), width, height)
-
-    def _effective_crop(self) -> CropRect | None:
-        if self._image_size is None:
-            return None
-        return effective_crop(self._image_size, self._crop_rect(), self.frame(), self.shape())
-
-    def _orient_buttons(self) -> tuple[QPushButton, ...]:
-        """回転・反転のボタン（OrientOp と同じ順）。"""
-        return (
-            self.rotate_left_button,
-            self.rotate_right_button,
-            self.flip_horizontal_button,
-            self.flip_vertical_button,
-        )
-
-    def _set_crop_limits(self, size: tuple[int, int]) -> None:
-        """トリミングの数値欄の上限を画像の大きさに合わせる。"""
-        width, height = size
-        self.crop_x_spin.setMaximum(max(0, width - 1))
-        self.crop_y_spin.setMaximum(max(0, height - 1))
-        self.crop_width_spin.setMaximum(width)
-        self.crop_height_spin.setMaximum(height)
-
     def _adjustment_sliders(self) -> tuple["ResettableSlider", ...]:
         """色を変えるスライダー（「加工をリセット」で戻すもの）。"""
         return (
@@ -1024,9 +635,6 @@ class SettingsPanel(QWidget):
             self.denoise_slider,
         )
 
-    def _crop_spins(self) -> tuple[QSpinBox, ...]:
-        return (self.crop_x_spin, self.crop_y_spin, self.crop_width_spin, self.crop_height_spin)
-
     def _set_controls_enabled(self, enabled: bool) -> None:
         for widget in self.findChildren(QWidget):
             # メニューは開くボタンの有効・無効で決まるので触らない（QMenu を有効にすると、
@@ -1040,104 +648,5 @@ class SettingsPanel(QWidget):
             self._update_trim_button()
             self.settings_changed.emit(self.settings())
 
-    def _block(self) -> "_Updating":
-        return _Updating(self)
-
-
-class _Updating:
-    """プログラムから値を変える間、連動処理とシグナル発行を止める。"""
-
-    def __init__(self, panel: SettingsPanel) -> None:
-        self._panel = panel
-        self._previous = False
-
-    def __enter__(self) -> None:
-        self._previous = self._panel._updating
-        self._panel._updating = True
-
-    def __exit__(self, *exc: object) -> None:
-        self._panel._updating = self._previous
-
-
-def _ev_text(ev: float) -> str:
-    """露出を「+1.3 EV」「-0.5 EV」「0.0 EV」のように表示する。"""
-    return f"{ev:+.1f} EV" if ev else "0.0 EV"
-
-
-def _signed_text(value: int) -> str:
-    """0 以外は符号付きで表示する（例: +30, -50）。"""
-    return f"{value:+d}" if value else "0"
-
-
-def _page(*widgets: QWidget) -> QWidget:
-    """タブの中身（部品を上から並べ、余りは下に空ける）を作る。"""
-    page = QWidget()
-    layout = QVBoxLayout(page)
-    layout.setSpacing(PANEL_SPACING)
-    # タブの枠の内側にさらに余白を足すとパネルの最小幅が広がるので、左右は詰める
-    layout.setContentsMargins(0, PANEL_MARGIN, 0, 0)
-    for widget in widgets:
-        layout.addWidget(widget)
-    layout.addStretch(1)
-    return page
-
-
-def _percent_text(value: int) -> str:
-    return f"{value}%"
-
-
-def _kelvin_text(kelvin: int) -> str:
-    return f"{kelvin} K"
-
-
-class ResettableSlider(QSlider):
-    """ダブルクリックで既定値に戻る横向きのスライダー。"""
-
-    def __init__(self, default: int, parent: QWidget | None = None) -> None:
-        super().__init__(Qt.Orientation.Horizontal, parent)
-        self._default = default
-
-    def default_value(self) -> int:
-        """既定値を返す。"""
-        return self._default
-
-    def reset(self) -> None:
-        """既定値に戻す（変われば valueChanged を発行する）。"""
-        self.setValue(self._default)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
-        if event is not None and event.button() == Qt.MouseButton.LeftButton:
-            self.reset()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-
-def _amount_slider(
-    minimum: int, maximum: int, default: int = 0
-) -> tuple[ResettableSlider, QLabel, QHBoxLayout]:
-    """強さを指定するスライダーと、現在値を表示するラベルを横に並べて返す。
-
-    スライダーは default で始まり、ダブルクリックで default に戻る。
-    """
-    slider = ResettableSlider(default)
-    slider.setRange(minimum, maximum)
-    slider.setValue(default)
-    slider.setPageStep(10)
-    slider.setMinimumWidth(SLIDER_MIN_WIDTH)
-    label = QLabel(str(minimum))
-    label.setMinimumWidth(64)  # 「10000 K」が入る幅で、各スライダーの長さをそろえる
-    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    row = QHBoxLayout()
-    row.addWidget(slider)
-    row.addWidget(label)
-    return slider, label, row
-
-
-def _spin_box(minimum: int, maximum: int, suffix: str) -> QSpinBox:
-    spin = QSpinBox()
-    spin.setRange(minimum, maximum)
-    spin.setSuffix(suffix)
-    spin.setKeyboardTracking(False)  # 入力確定時にだけ連動させる
-    spin.setAccelerated(True)
-    return spin
+    def _block(self) -> "Updating":
+        return Updating(self)

@@ -1981,7 +1981,7 @@ def test_apply_preset_updates_preview(loaded_window, qtbot):
 
 def test_save_preset_error_is_shown(loaded_window, monkeypatch, warnings):
     from image_editor.core.presets import PresetError
-    from image_editor.ui import main_window as module
+    from image_editor.ui import window_presets as module
 
     def fail(path, presets):
         raise PresetError("書き込めません")
